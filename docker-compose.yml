@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  # 后端服务
+  backend:
+    build: ./backend
+    container_name: pacc_backend
+    restart: always
+    volumes:
+      # 把宿主机的 ./data 目录挂载进去，保存数据库
+      - ./data:/app/data
+      # 同步时间
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "3001:3001" # 方便调试，不暴露也可以
+
+  # 前端服务
+  frontend:
+    build: .
+    container_name: pacc_frontend
+    restart: always
+    ports:
+      - "3000:80" # 浏览器访问宿主机 3000 端口 -> 容器 80 端口
+    depends_on:
+      - backend
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
