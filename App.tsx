@@ -1,270 +1,369 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import Dashboard from './components/Dashboard';
 import StockList from './components/StockList';
 import FundList from './components/FundList';
 import FixedIncome from './components/FixedIncome';
 import Login from './components/Login';
-import { StockAsset, FundAsset, FixedIncomeAsset } from './types';
-import { Send, X, AlertTriangle, BellRing } from 'lucide-react';
-
-const API_BASE = ''; 
+import PushSettingsModal from './components/PushSettingsModal';
 
 const App: React.FC = () => {
+  // --- 1. 全局状态定义 ---
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [token, setToken] = useState<string | null>(localStorage.getItem('pacc_token'));
   
-  // 全局核心状态
-  const [dataSource, setDataSource] = useState<'sina' | 'tencent'>('sina');
-  const [stocks, setStocks] = useState<StockAsset[]>([]);
-  const [funds, setFunds] = useState<FundAsset[]>([]);
-  const [fixedIncome, setFixedIncome] = useState<FixedIncomeAsset[]>([]);
+  // 核心资产数据
+  const [stocks, setStocks] = useState<any[]>([]);
+  const [funds, setFunds] = useState<any[]>([]);
+  const [fixedIncome, setFixedIncome] = useState<any[]>([]);
   
-  const [activeTab, setActiveTab] = useState('dashboard');
+  // 界面交互状态
+  const [isPushModalOpen, setIsPushModalOpen] = useState(false);
+  const [webhookUrl, setWebhookUrl] = useState('');
+  const [isPushTesting, setIsPushTesting] = useState(false);
+  
+  // 行情同步状态
+  const [dataSource, setDataSource] = useState<'sina' | 'tencent'>('sina');
   const [isSyncing, setIsSyncing] = useState(false);
-  const [lastSyncTime, setLastSyncTime] = useState<string>('');
-  const [notifyConfig, setNotifyConfig] = useState({ webhook: '', isOpen: false });
+  const [lastSyncTime, setLastSyncTime] = useState('');
 
-  const handleLoginSuccess = (newToken: string) => {
-    localStorage.setItem('pacc_token', newToken);
-    setToken(newToken);
-  };
-
-  const logout = () => {
-    localStorage.removeItem('pacc_token');
-    setToken(null);
-  };
-
-  // 1. 获取所有持仓数据 (基础本金/份额)
-  const fetchAllData = useCallback(async () => {
-    if (!token) return;
-    try {
-      const res = await fetch(`${API_BASE}/api/assets`, { 
-        headers: { 'Authorization': `Bearer ${token}` } 
-      });
-      if (res.status === 401) { logout(); return; }
-      const data = await res.json();
-      
-      // 这里的映射逻辑必须与后端的 Asset 字段严格对应
-      setStocks(data.stocks.map((s: any) => ({ 
-        ...s, id: String(s.id), currentPrice: s.costPrice, changePercent: 0 
-      })));
-      setFunds(data.funds.map((f: any) => ({ 
-        ...f, id: String(f.id), shares: f.quantity, netValue: f.costPrice, estimatedChange: 0 
-      })));
-      setFixedIncome(data.fixed_income.map((i: any) => ({ 
-        ...i, id: String(i.id), principal: i.quantity 
-      })));
-    } catch (e) {
-      console.error("数据加载异常:", e);
+  // 监听 Token 变化
+  useEffect(() => {
+    if (token) {
+      setIsAuthenticated(true);
+      const savedWebhook = localStorage.getItem('pacc_webhook_url');
+      if (savedWebhook) setWebhookUrl(savedWebhook);
     }
   }, [token]);
 
-  useEffect(() => { if (token) fetchAllData(); }, [token, fetchAllData]);
-
-  // 2. 核心行情同步逻辑 (通过选定的数据源：新浪/腾讯)
-  const syncRealMarketData = useCallback(async () => {
+  // --- 2. 核心逻辑：获取资产列表 (包含字段翻译层) ---
+  const fetchAssets = useCallback(async () => {
     if (!token) return;
-    setIsSyncing(true);
+
     try {
-      const res = await fetch(`${API_BASE}/api/market/refresh?source=${dataSource}`, {
+      const res = await fetch('/api/assets', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      const market = await res.json();
-      
-      // 更新股票/ETF实时行情
-      setStocks(prev => prev.map(s => {
-        const m = market.stocks[s.code];
-        return m ? { ...s, currentPrice: m.price, changePercent: m.change } : s;
-      }));
 
-      // 更新基金实时估值
-      setFunds(prev => prev.map(f => {
-        const m = market.funds[f.code];
-        return m ? { ...f, netValue: m.nav, estimatedChange: m.change } : f;
-      }));
+      if (res.ok) {
+        const data = await res.json();
+        
+        // [股票] 数据清洗与映射 (保持原样，不动)
+        const safeStocks = data.stocks.map((item: any) => ({
+          ...item,
+          costPrice: item.cost_price ?? item.costPrice ?? 0,
+          quantity: item.quantity ?? 0,
+          currentPrice: 0, // 初始为0，等行情刷新
+          changePercent: 0,
+          name: item.name || "未知标的"
+        }));
+
+        // [基金] 数据清洗与映射 (保持原样，不动)
+        const safeFunds = data.funds.map((item: any) => ({
+          ...item,
+          costPrice: item.cost_price ?? item.costPrice ?? 0,
+          shares: item.quantity ?? 0,
+          quantity: item.quantity ?? 0,
+          netValue: 0, 
+          estimatedChange: 0,
+          name: item.name || "未知基金"
+        }));
+        
+        // [固收/理财] 数据清洗 (⚠️ 关键适配点)
+        const safeFixed = data.fixed_income.map((item: any) => ({
+          ...item,
+          quantity: item.quantity ?? 0, // 本金
+          apy: item.apy ?? 0,           // 利率
+          startDate: item.start_date ?? item.startDate ?? '',
+          tag: item.tag || 'deposit',   // 默认为存款模式
+          // 理财模式下，cost_price 存储的是用户手动输入的“当前市值”
+          costPrice: item.cost_price ?? 0 
+        }));
+
+        setStocks(safeStocks);
+        setFunds(safeFunds);
+        setFixedIncome(safeFixed);
+        
+        // 立即触发一次行情刷新
+        requestAnimationFrame(() => {
+            fetchMarketData();
+        });
+      }
+    } catch (e) {
+      console.error("Fetch assets failed", e);
+    }
+  }, [token]);
+
+  // --- 3. 核心逻辑：刷新行情 (仅针对股票和基金) ---
+  const fetchMarketData = useCallback(async () => {
+    if (!token) return;
+    
+    setIsSyncing(true);
+    try {
+      const res = await fetch(`/api/market/refresh?source=${dataSource}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
       
-      setLastSyncTime(market.timestamp);
-    } catch (error) {
-      console.error("行情同步错误:", error);
+      if (res.ok) {
+        const market = await res.json();
+        
+        // 更新股票
+        setStocks(prevStocks => prevStocks.map(s => {
+          const m = market.stocks[s.code];
+          if (m) {
+            return { 
+              ...s, 
+              currentPrice: m.price, 
+              changePercent: m.change 
+            };
+          }
+          return s;
+        }));
+
+        // 更新基金
+        setFunds(prevFunds => prevFunds.map(f => {
+          const m = market.funds[f.code];
+          if (m) {
+            return { 
+              ...f, 
+              netValue: m.price || m.nav, 
+              estimatedChange: m.change,
+              navDate: m.navDate
+            };
+          }
+          return f;
+        }));
+        
+        const now = new Date();
+        const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+        setLastSyncTime(timeStr);
+      }
+    } catch (e) {
+      console.error("Market refresh failed", e);
     } finally {
       setIsSyncing(false);
     }
   }, [token, dataSource]);
 
-  // 设定定时任务：每8秒同步一次最新价格
+  // --- 4. 自动轮询机制 ---
   useEffect(() => {
-    if (!token) return;
-    syncRealMarketData();
-    const timer = setInterval(syncRealMarketData, 8000);
-    return () => clearInterval(timer);
-  }, [token, dataSource, syncRealMarketData]);
+    if (isAuthenticated) {
+      fetchAssets();
+      const intervalId = setInterval(() => {
+        fetchMarketData();
+      }, 10000); // 10秒刷新一次股票基金行情
+      return () => clearInterval(intervalId);
+    }
+  }, [isAuthenticated, fetchAssets, fetchMarketData]);
 
-  // --- 持仓管理核心交互 ---
-
-  // 【添加/加仓】：POST 请求
-  const saveAsset = async (type: string, asset: any) => {
-    try {
-      const res = await fetch(`${API_BASE}/api/assets`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          asset_type: type,
-          name: asset.name,
-          code: asset.code,
-          quantity: Number(asset.quantity || asset.shares || 0),
-          cost_price: Number(asset.costPrice || asset.netValue || 0),
-          tag: asset.tag || '进攻',
-          start_date: asset.startDate,
-          apy: Number(asset.apy || 0)
-        })
-      });
-      if (res.ok) fetchAllData();
-    } catch (e) { alert("保存失败"); }
+  // --- 5. 数据处理辅助函数 (Payload Builder) ---
+  const preparePayload = (asset: any) => {
+    return {
+      name: asset.name,
+      code: asset.code,
+      tag: asset.tag || '稳健',
+      asset_type: asset.asset_type,
+      
+      // 价格翻译
+      cost_price: Number(asset.costPrice ?? 0),
+      
+      // 数量翻译
+      quantity: Number(asset.quantity ?? asset.shares ?? 0),
+      
+      // 日期翻译
+      start_date: asset.startDate ?? null,
+      
+      // 收益率
+      apy: Number(asset.apy ?? 0)
+    };
   };
 
-  // 【修正/编辑】：PUT 请求 (对应 pencil 铅笔图标)
-  const handleEditAsset = async (type: string, asset: any) => {
+  // --- 6. CRUD 操作处理函数 ---
+
+  const handleAddAsset = async (asset: any) => {
     try {
-      const res = await fetch(`${API_BASE}/api/assets/${asset.code}`, {
+      const payload = preparePayload(asset);
+      const res = await fetch('/api/assets', {
+        method: 'POST',
+        headers: { 
+            'Content-Type': 'application/json', 
+            'Authorization': `Bearer ${token}` 
+        },
+        body: JSON.stringify(payload)
+      });
+      
+      if (res.ok) {
+        fetchAssets(); // 刷新列表
+      } else {
+        alert("添加失败，请检查代码是否重复");
+      }
+    } catch (e) {
+      console.error(e);
+      alert("网络错误");
+    }
+  };
+
+  const handleEditAsset = async (asset: any) => {
+    if(!token) return;
+    try {
+      const payload = preparePayload(asset);
+      // 注意：后端通常用 code 作为标识更新
+      const res = await fetch(`/api/assets/${asset.code}`, {
         method: 'PUT',
         headers: { 
-          'Authorization': `Bearer ${token}`, 
-          'Content-Type': 'application/json' 
+            'Content-Type': 'application/json', 
+            'Authorization': `Bearer ${token}` 
         },
-        body: JSON.stringify({
-          asset_type: type,
-          name: asset.name,
-          code: asset.code,
-          quantity: Number(asset.quantity || asset.shares || 0),
-          cost_price: Number(asset.costPrice || asset.netValue || 0),
-          tag: asset.tag || '已修正',
-        })
+        body: JSON.stringify(payload)
       });
+      
       if (res.ok) {
-        fetchAllData();
-        // 提示用户修正成功
-        console.log("持仓成本修正成功");
+        fetchAssets(); // 刷新列表
       }
-    } catch (e) { alert("修正失败"); }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
-  // 【物理删除】：DELETE 请求 (对应 trash 垃圾桶图标)
-  const handleDeleteAsset = async (code: string) => {
+  const handleDeleteAsset = async (id: number | string) => { // 兼容 string 和 number
+    if (!window.confirm("确认删除吗？")) return;
+
     try {
-      const res = await fetch(`${API_BASE}/api/assets/${code}`, {
+      // 注意：这里用 id 删除更安全
+      const res = await fetch(`/api/assets/${id}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      if (res.ok) fetchAllData();
-    } catch (e) { alert("删除失败"); }
+      
+      if (res.ok) {
+        fetchAssets(); // 刷新列表
+      } else {
+        alert("删除失败");
+      }
+    } catch (e) {
+      console.error(e);
+    }
   };
 
-  // 推送测试与配置保存
+  // --- 7. 推送测试逻辑 ---
   const handlePushTest = async () => {
-    if (!notifyConfig.webhook) return;
+    setIsPushTesting(true);
     try {
-      // 保存 Webhook 到系统配置表
-      await fetch(`${API_BASE}/api/config/webhook`, {
+      await fetch('/api/config/webhook', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ webhook_url: notifyConfig.webhook })
+        body: JSON.stringify({ webhook_url: webhookUrl })
       });
-      // 触发一次即时推送测试
-      await fetch(`${API_BASE}/api/push/test`, { 
-        method: 'POST', 
-        headers: { 'Authorization': `Bearer ${token}` } 
+      localStorage.setItem('pacc_webhook_url', webhookUrl);
+      
+      const res = await fetch('/api/push/test', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
       });
-      alert("推送测试已发起，请在客户端查看收到的 Markdown 报表");
-      setNotifyConfig({ ...notifyConfig, isOpen: false });
-    } catch (e) { alert("配置保存或推送失败"); }
+      
+      if (res.ok) alert("✅ 推送指令已发送");
+      else alert("❌ 发送失败");
+      
+    } catch (e) { 
+        alert("❌ 网络错误"); 
+    } finally { 
+        setIsPushTesting(false); 
+        setIsPushModalOpen(false); 
+    }
   };
 
-  if (!token) return <Login onLoginSuccess={handleLoginSuccess} />;
+  const handleLogout = () => {
+    setToken(null);
+    setIsAuthenticated(false);
+    localStorage.removeItem('pacc_token');
+  };
+
+  // --- 8. 渲染逻辑 ---
+
+  if (!isAuthenticated) {
+    return <Login onLogin={(t) => { 
+        setToken(t); 
+        localStorage.setItem('pacc_token', t); 
+    }} />;
+  }
 
   return (
-    <Layout 
-      activeTab={activeTab} 
-      setActiveTab={setActiveTab} 
-      onRefresh={syncRealMarketData}
-      onOpenNotifySettings={() => setNotifyConfig({ ...notifyConfig, isOpen: true })}
-      dataSource={dataSource}
-      setDataSource={setDataSource}
-      isSyncing={isSyncing}
-      lastSyncTime={lastSyncTime}
-    >
-      {/* 视图分发器 */}
-      {activeTab === 'dashboard' && (
-        <Dashboard customStocks={stocks} customFunds={funds} fixedIncome={fixedIncome} />
-      )}
-      
-      {activeTab === 'stocks' && (
-        <StockList 
-          stocks={stocks} 
-          onAdd={(a) => saveAsset('stock', a)} 
-          onDelete={handleDeleteAsset}
-          onEdit={(a) => handleEditAsset('stock', a)}
+    <Router>
+      <Layout 
+        onRefresh={() => fetchMarketData()}
+        onOpenNotifySettings={() => setIsPushModalOpen(true)}
+        onLogout={handleLogout}
+        dataSource={dataSource}
+        setDataSource={setDataSource}
+        isSyncing={isSyncing}
+        lastSyncTime={lastSyncTime}
+      >
+        <Routes>
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          
+          <Route 
+            path="/dashboard" 
+            element={
+                <Dashboard 
+                    customStocks={stocks} 
+                    customFunds={funds} 
+                    fixedIncome={fixedIncome} 
+                />
+            } 
+          />
+          
+          <Route 
+            path="/stocks" 
+            element={
+                <StockList 
+                    stocks={stocks} 
+                    onDelete={handleDeleteAsset} 
+                    onEdit={handleEditAsset} 
+                    onAdd={handleAddAsset} 
+                />
+            } 
+          />
+          
+          <Route 
+            path="/funds" 
+            element={
+                <FundList 
+                    funds={funds} 
+                    onDelete={handleDeleteAsset} 
+                    onEdit={handleEditAsset} 
+                    onAdd={handleAddAsset} 
+                />
+            } 
+          />
+          
+          {/* ⚠️ 核心路由：理财页面 */}
+          <Route 
+            path="/fixed-income" 
+            element={
+                <FixedIncome 
+                    items={fixedIncome} 
+                    onDelete={handleDeleteAsset} 
+                    onEdit={handleEditAsset} 
+                    onAdd={handleAddAsset} 
+                />
+            } 
+          />
+          
+          {/* 兜底跳转 */}
+          <Route path="*" element={<Navigate to="/dashboard" />} />
+        </Routes>
+        
+        <PushSettingsModal 
+          isOpen={isPushModalOpen}
+          onClose={() => setIsPushModalOpen(false)}
+          webhook={webhookUrl}
+          setWebhook={setWebhookUrl}
+          onTest={handlePushTest}
+          isLoading={isPushTesting}
         />
-      )}
-      
-      {activeTab === 'funds' && (
-        <FundList 
-          funds={funds} 
-          onAdd={(a) => saveAsset('fund', a)} 
-          onDelete={handleDeleteAsset}
-          onEdit={(a) => handleEditAsset('fund', a)}
-        />
-      )}
-      
-      {activeTab === 'fixed' && (
-        <FixedIncome 
-          items={fixedIncome} 
-          onAdd={(a) => saveAsset('fixed', a)} 
-          onDelete={handleDeleteAsset}
-          onEdit={(a) => handleEditAsset('fixed', a)}
-        />
-      )}
-      
-      {/* 侧边栏触发的全局配置弹窗 */}
-      {notifyConfig.isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
-          <div className="bg-white rounded-[2.5rem] shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in duration-300">
-            <div className="p-10">
-              <div className="flex justify-between items-center mb-8">
-                <div className="flex items-center space-x-3">
-                    <div className="p-2 bg-indigo-50 text-indigo-600 rounded-lg"><BellRing size={24}/></div>
-                    <h3 className="text-2xl font-black text-slate-900 tracking-tight">日报推送设置</h3>
-                </div>
-                <button onClick={() => setNotifyConfig({...notifyConfig, isOpen: false})} className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-400">
-                  <X size={24} />
-                </button>
-              </div>
-              <div className="space-y-6">
-                <div className="bg-amber-50 border border-amber-100 p-5 rounded-3xl flex items-start space-x-3">
-                  <AlertTriangle className="text-amber-500 shrink-0" size={18} />
-                  <p className="text-xs text-amber-800 font-bold leading-relaxed">
-                    请输入企业微信或钉钉机器人的 Webhook 地址。系统将在每日下午 15:05 自动推送资产汇总日报到您的客户端。
-                  </p>
-                </div>
-                <div className="relative">
-                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">机器人 Webhook 链接</label>
-                  <input 
-                    type="text" 
-                    placeholder="https://qyapi.weixin.qq.com/..." 
-                    className="w-full px-5 py-4 bg-slate-50 border-2 border-slate-100 rounded-2xl outline-none focus:border-indigo-500 transition-all font-mono text-xs text-slate-700" 
-                    value={notifyConfig.webhook} 
-                    onChange={e => setNotifyConfig({...notifyConfig, webhook: e.target.value})} 
-                  />
-                </div>
-                <button onClick={handlePushTest} className="w-full bg-slate-900 text-white py-5 rounded-[1.5rem] font-black shadow-xl shadow-slate-900/20 active:scale-95 transition-all hover:bg-indigo-600 tracking-widest flex items-center justify-center space-x-2">
-                  <Send size={18}/>
-                  <span>保存配置并发送测试</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </Layout>
+      </Layout>
+    </Router>
   );
 };
 

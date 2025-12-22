@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
 import { Lock, ChevronRight, Loader2, ShieldCheck } from 'lucide-react';
 
+// 1. 修改接口定义，与 App.tsx 保持一致
 interface LoginProps {
-  onLoginSuccess: (token: string) => void;
+  onLogin: (token: string) => void; 
 }
 
-const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
+// 2. 解构参数改为 onLogin
+const Login: React.FC<LoginProps> = ({ onLogin }) => {
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -16,26 +18,33 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     setIsLoading(true);
     setError('');
 
-    // 构建 OAuth2 表单数据
     const formData = new URLSearchParams();
     formData.append('username', username);
     formData.append('password', password);
 
     try {
-      // 请求后端 Python 接口
       const res = await fetch('/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: formData,
       });
 
-      if (!res.ok) throw new Error('密钥验证失败');
-
       const data = await res.json();
-      // 登录成功，回调父组件
-      onLoginSuccess(data.access_token);
-    } catch (err) {
-      setError('无法进入系统，请检查密码');
+
+      if (!res.ok) {
+        throw new Error(data.detail || '验证失败');
+      }
+
+      // 3. 调用正确的父组件回调
+      if (data.access_token) {
+        onLogin(data.access_token);
+      } else {
+        throw new Error('服务器响应格式错误');
+      }
+      
+    } catch (err: any) {
+      console.error("Login failed:", err);
+      setError(err.message || '无法连接服务器，请检查后端状态');
     } finally {
       setIsLoading(false);
     }
@@ -43,7 +52,6 @@ const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
 
   return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 relative overflow-hidden">
-      {/* 背景装饰 */}
       <div className="absolute top-[-10%] left-[-10%] w-96 h-96 bg-indigo-600/30 rounded-full blur-[100px]" />
       <div className="absolute bottom-[-10%] right-[-10%] w-96 h-96 bg-purple-600/20 rounded-full blur-[100px]" />
 

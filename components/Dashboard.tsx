@@ -1,54 +1,61 @@
 import React, { useMemo, useEffect, useState } from 'react';
-import { Wallet, Calendar, PieChart, TrendingUp, ArrowUpRight, ArrowDownRight, Activity, Zap } from 'lucide-react';
-import { StockAsset, FundAsset, FixedIncomeAsset } from '../types';
-import AssetCards from './AssetCards';
+import { 
+  Calendar, PieChart, Activity, Zap, BarChart3 
+} from 'lucide-react';
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+import { StockAsset, FundAsset, FixedAsset } from '../types';
+import AssetCards from './AssetCards'; // 👈 必须引用刚才那个文件
 
 interface DashboardProps {
   customStocks: StockAsset[];
   customFunds: FundAsset[];
-  fixedIncome: FixedIncomeAsset[];
+  fixedIncome: FixedAsset[];
+}
+
+interface HistoryItem {
+  date: string;
+  total: number;
+  profit: number;
 }
 
 const Dashboard: React.FC<DashboardProps> = ({ customStocks, customFunds, fixedIncome }) => {
-  const [historyData, setHistoryData] = useState<any[]>([]);
+  const [historyData, setHistoryData] = useState<HistoryItem[]>([]);
 
-  // 1. 获取后端保存的历史快照
+  // 1. 获取历史趋势数据
   useEffect(() => {
-    fetch('/api/history', { headers: { 'Authorization': `Bearer ${localStorage.getItem('pacc_token')}` } })
+    const token = localStorage.getItem('pacc_token');
+    if (!token) return;
+    fetch('/api/history', { headers: { 'Authorization': `Bearer ${token}` } })
       .then(res => res.json())
       .then(data => setHistoryData(data))
       .catch(e => console.error("获取历史数据失败:", e));
   }, []);
 
-  // 2. 实时计算：股票/ETF 统计
+  // 2. 实时计算三大类资产的状态
   const stockStats = useMemo(() => {
-    const marketVal = customStocks.reduce((acc, s) => acc + s.currentPrice * s.quantity, 0);
-    const profit = customStocks.reduce((acc, s) => acc + (s.currentPrice * s.quantity * (s.changePercent/100)), 0);
-    const winCount = customStocks.filter(s => s.changePercent > 0).length;
+    const marketVal = customStocks.reduce((acc, s) => acc + (s.currentPrice || 0) * (s.quantity || 0), 0);
+    const profit = customStocks.reduce((acc, s) => acc + ((s.currentPrice || 0) * (s.quantity || 0) * ((s.changePercent || 0)/100)), 0);
+    const winCount = customStocks.filter(s => (s.changePercent || 0) > 0).length;
     return { marketVal, profit, winCount, totalCount: customStocks.length };
   }, [customStocks]);
 
-  // 3. 实时计算：场外基金统计
   const fundStats = useMemo(() => {
-    const marketVal = customFunds.reduce((acc, f) => acc + f.netValue * f.shares, 0);
-    const profit = customFunds.reduce((acc, f) => acc + (f.netValue * f.shares * (f.estimatedChange/100)), 0);
-    const winCount = customFunds.filter(f => f.estimatedChange > 0).length;
+    const marketVal = customFunds.reduce((acc, f) => acc + (f.netValue || 0) * (f.shares || 0), 0);
+    const profit = customFunds.reduce((acc, f) => acc + ((f.netValue || 0) * (f.shares || 0) * ((f.estimatedChange || 0)/100)), 0);
+    const winCount = customFunds.filter(f => (f.estimatedChange || 0) > 0).length;
     return { marketVal, profit, winCount, totalCount: customFunds.length };
   }, [customFunds]);
 
-  // 4. 实时计算：理财/固收统计
   const fixedStats = useMemo(() => {
-     const totalPrincipal = fixedIncome.reduce((acc, i) => acc + i.principal, 0);
-     const dailyIncome = fixedIncome.reduce((acc, i) => acc + (i.principal * (i.apy / 100) / 365), 0);
+     const totalPrincipal = fixedIncome.reduce((acc, i) => acc + (i.quantity || 0), 0);
+     const dailyIncome = fixedIncome.reduce((acc, i) => acc + ((i.quantity || 0) * ((i.apy || 0) / 100) / 365), 0);
      return { totalPrincipal, dailyIncome };
   }, [fixedIncome]);
 
-  // 5. 汇总数据
   const totalAssets = stockStats.marketVal + fundStats.marketVal + fixedStats.totalPrincipal;
   const totalDayProfit = stockStats.profit + fundStats.profit + fixedStats.dailyIncome;
   const dayReturnRate = totalAssets > 0 ? (totalDayProfit / totalAssets) * 100 : 0;
 
-  // 6. 新增：阶段评价逻辑
   const getMarketComment = () => {
     if (dayReturnRate >= 1.5) return "满仓吃肉行情，起飞！🚀";
     if (dayReturnRate > 0) return "小赚一笔，稳扎稳打。📈";
@@ -58,142 +65,141 @@ const Dashboard: React.FC<DashboardProps> = ({ customStocks, customFunds, fixedI
   };
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-700">
+    <div className="space-y-6 animate-in fade-in duration-700 pb-10">
+      
+      {/* 🔴 第一行：核心总览 (左：总资产，右：资产占比条) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        
-        {/* 左侧：核心资产卡片 */}
-        <div className="bg-slate-900 rounded-[2.5rem] p-8 text-white shadow-2xl relative overflow-hidden flex flex-col justify-between min-h-[240px]">
+        {/* 左：总资产卡片 */}
+        <div className="lg:col-span-1 bg-slate-900 rounded-[2.5rem] p-8 text-white shadow-2xl relative overflow-hidden flex flex-col justify-between min-h-[220px]">
            <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/20 rounded-full blur-[100px] -mr-32 -mt-32"></div>
            <div>
              <div className="flex items-center justify-between mb-4">
                <div className="text-slate-400 text-xs font-black uppercase tracking-widest">实时总资产净值</div>
                <div className="px-3 py-1 bg-white/10 rounded-full text-[10px] font-black text-indigo-300 border border-white/5">实时行情</div>
              </div>
-             <div className="text-5xl font-mono font-black tracking-tighter">
+             <div className="text-4xl md:text-5xl font-mono font-black tracking-tighter">
                ¥{totalAssets.toLocaleString(undefined, { maximumFractionDigits: 0 })}
              </div>
            </div>
-           
            <div className="pt-6 border-t border-white/10 flex justify-between items-end z-10">
              <div>
                <div className="text-slate-500 text-[10px] font-black uppercase mb-1">今日预计盈亏</div>
-               <div className={`text-3xl font-mono font-black ${totalDayProfit >= 0 ? 'text-rose-500' : 'text-emerald-400'}`}>
+               <div className={`text-2xl md:text-3xl font-mono font-black ${totalDayProfit >= 0 ? 'text-rose-500' : 'text-emerald-400'}`}>
                  {totalDayProfit >= 0 ? '+' : ''}{totalDayProfit.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                </div>
                <div className="text-[10px] font-bold text-slate-400 mt-1">收益率: {dayReturnRate.toFixed(2)}%</div>
              </div>
-             <div className="text-right">
-                <div className="text-[10px] text-slate-500 font-black uppercase mb-2">权益资产占比</div>
-                <div className="text-sm font-black font-mono text-indigo-300 bg-indigo-500/10 px-3 py-1 rounded-lg border border-indigo-500/20">
-                  {totalAssets > 0 ? (((stockStats.marketVal + fundStats.marketVal) / totalAssets) * 100).toFixed(1) : 0}%
-                </div>
-             </div>
            </div>
         </div>
 
-        {/* 右侧：收益日历热力图 */}
-        <div className="lg:col-span-2 bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-200 flex flex-col justify-between relative overflow-hidden">
-          <div className="flex items-center justify-between mb-6">
+        {/* 右：资产占比 (从底部提上来的) */}
+        <div className="lg:col-span-2 bg-white px-8 py-6 rounded-[2.5rem] border border-slate-200 shadow-sm flex flex-col justify-center">
+            <div className="flex items-center justify-between mb-6">
+                 <div className="text-sm font-black text-slate-900 uppercase tracking-widest flex items-center">
+                    <PieChart size={20} className="mr-3 text-indigo-600"/> 资产配置占比
+                 </div>
+                 <div className="text-xs text-slate-400 font-bold">Total Allocation</div>
+            </div>
+             <div className="w-full relative h-8 bg-slate-100 rounded-full ring-4 ring-slate-50 overflow-hidden flex shadow-inner mb-6">
+                <div className="h-full bg-indigo-600 transition-all duration-1000 shadow-lg relative z-10" style={{width: `${totalAssets > 0 ? (stockStats.marketVal/totalAssets)*100 : 0}%`}}></div>
+                <div className="h-full bg-purple-500 transition-all duration-1000 shadow-lg relative z-20" style={{width: `${totalAssets > 0 ? (fundStats.marketVal/totalAssets)*100 : 0}%`}}></div>
+                <div className="h-full bg-emerald-500 transition-all duration-1000 shadow-lg relative z-30" style={{width: `${totalAssets > 0 ? (fixedStats.totalPrincipal/totalAssets)*100 : 0}%`}}></div>
+             </div>
+             <div className="grid grid-cols-3 gap-4">
+                <div className="bg-indigo-50 rounded-2xl p-3 text-center border border-indigo-100">
+                    <div className="text-[10px] text-indigo-400 font-black uppercase">股票资产</div>
+                    <div className="text-lg font-black text-indigo-700">{totalAssets > 0 ? ((stockStats.marketVal/totalAssets)*100).toFixed(1) : 0}%</div>
+                </div>
+                <div className="bg-purple-50 rounded-2xl p-3 text-center border border-purple-100">
+                    <div className="text-[10px] text-purple-400 font-black uppercase">基金资产</div>
+                    <div className="text-lg font-black text-purple-700">{totalAssets > 0 ? ((fundStats.marketVal/totalAssets)*100).toFixed(1) : 0}%</div>
+                </div>
+                <div className="bg-emerald-50 rounded-2xl p-3 text-center border border-emerald-100">
+                    <div className="text-[10px] text-emerald-400 font-black uppercase">固收理财</div>
+                    <div className="text-lg font-black text-emerald-700">{totalAssets > 0 ? ((fixedStats.totalPrincipal/totalAssets)*100).toFixed(1) : 0}%</div>
+                </div>
+             </div>
+        </div>
+      </div>
+
+      {/* 🔴 第二行：持仓明细 (调用拆分出去的组件，这就是变短的原因！) */}
+      <div>
+         <AssetCards stocks={customStocks} funds={customFunds} fixedIncome={fixedIncome} />
+      </div>
+
+      {/* 🔴 第三行：净值走势图 */}
+      <div className="bg-white p-6 rounded-[2.5rem] shadow-sm border border-slate-200">
+           <div className="flex items-center justify-between mb-4">
              <div className="flex items-center space-x-3">
-                <div className="p-2.5 bg-indigo-50 rounded-xl text-indigo-600"><Calendar size={20}/></div>
+                <div className="p-2 bg-indigo-50 rounded-xl text-indigo-600"><BarChart3 size={20}/></div>
                 <div>
-                  <h3 className="font-black text-slate-900 text-lg tracking-tight">资产收益日历</h3>
-                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Performance Heatmap</p>
+                  <h3 className="font-black text-slate-900 text-lg tracking-tight">净值走势</h3>
+                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Net Worth Trend</p>
                 </div>
              </div>
-             <div className="flex items-center space-x-2 text-[10px] font-black text-slate-400 uppercase tracking-tighter">
-                <span>大亏</span>
-                <div className="w-3 h-3 bg-emerald-600 rounded-sm"></div>
-                <div className="w-3 h-3 bg-emerald-200 rounded-sm"></div>
-                <div className="w-3 h-3 bg-slate-100 rounded-sm"></div>
-                <div className="w-3 h-3 bg-rose-200 rounded-sm"></div>
-                <div className="w-3 h-3 bg-rose-600 rounded-sm"></div>
-                <span>大赚</span>
-             </div>
-          </div>
-          
-          <div className="w-full overflow-x-auto custom-scrollbar">
-             {(!historyData || historyData.length === 0) ? (
-                <div className="w-full h-24 flex items-center justify-center text-slate-400 text-xs font-bold bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
-                   等待每日收盘数据自动生成...
-                </div>
+           </div>
+           <div className="w-full h-[250px]">
+             {historyData.length > 0 ? (
+               <ResponsiveContainer width="100%" height="100%">
+                 <AreaChart data={historyData}>
+                   <defs>
+                     <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
+                       <stop offset="5%" stopColor="#6366f1" stopOpacity={0.2}/>
+                       <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                     </linearGradient>
+                   </defs>
+                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                   <XAxis dataKey="date" tick={{fontSize: 10, fill: '#94a3b8'}} axisLine={false} tickLine={false} minTickGap={30}/>
+                   <YAxis hide domain={['auto', 'auto']} />
+                   <Tooltip formatter={(val: any) => [`¥${val.toLocaleString()}`, '总资产']} contentStyle={{borderRadius: '12px'}}/>
+                   <Area type="monotone" dataKey="total" stroke="#6366f1" strokeWidth={3} fillOpacity={1} fill="url(#colorTotal)" animationDuration={1500}/>
+                 </AreaChart>
+               </ResponsiveContainer>
              ) : (
-                <div className="flex gap-2.5 pb-2">
-                   {historyData.slice(-30).map((day, idx) => {
-                      let colorClass = 'bg-slate-100'; 
-                      if (day.profit > 1000) colorClass = 'bg-rose-600 shadow-[0_0_15px_rgba(225,29,72,0.2)]';
-                      else if (day.profit > 100) colorClass = 'bg-rose-300';
-                      else if (day.profit > 0) colorClass = 'bg-rose-100';
-                      else if (day.profit < -1000) colorClass = 'bg-emerald-600 shadow-[0_0_15px_rgba(16,185,129,0.2)]';
-                      else if (day.profit < -100) colorClass = 'bg-emerald-300';
-                      else if (day.profit < 0) colorClass = 'bg-emerald-100';
-                      
-                      return (
-                        <div key={idx} className="group relative">
-                            <div className={`w-10 h-24 rounded-2xl ${colorClass} transition-all duration-300 hover:scale-105 hover:z-10 cursor-pointer`}></div>
-                            <div className="hidden group-hover:block absolute bottom-full left-1/2 -translate-x-1/2 mb-3 bg-slate-900 text-white text-[10px] font-bold px-3 py-2.5 rounded-2xl shadow-2xl whitespace-nowrap z-50">
-                              <div className="text-slate-400 mb-1 border-b border-white/10 pb-1">{day.date}</div>
-                              <div className={day.profit >= 0 ? 'text-rose-400' : 'text-emerald-400'}>收益: ¥{day.profit.toLocaleString()}</div>
-                            </div>
-                        </div>
-                      )
-                   })}
-                </div>
+               <div className="h-full flex items-center justify-center text-slate-400 text-xs font-bold bg-slate-50/50 rounded-2xl border-2 border-dashed border-slate-100">
+                 等待积累更多历史数据...
+               </div>
              )}
-          </div>
-          <div className="mt-4 pt-4 border-t border-slate-100 flex items-center text-slate-400 text-[10px] font-bold uppercase tracking-widest">
-             <Activity size={12} className="mr-2 text-indigo-500" /> 近30个交易日历史回顾
-          </div>
-        </div>
+           </div>
       </div>
 
-      {/* 中间栏：评价与详细分布 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* 动态评价 */}
-        <div className="bg-gradient-to-r from-indigo-500 to-purple-600 rounded-3xl p-6 shadow-lg shadow-indigo-200 text-white flex items-center justify-between">
-           <div className="flex items-center space-x-4">
-             <div className="p-3 bg-white/20 rounded-2xl backdrop-blur-md"><Zap size={24} fill="currentColor"/></div>
-             <div>
-               <div className="text-[10px] font-black uppercase tracking-widest opacity-80">智能情绪分析</div>
-               <div className="text-lg font-black">{getMarketComment()}</div>
+      {/* 🔴 第四行：热力图 + 情绪分析 */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2 bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-200 flex flex-col justify-between">
+            <div className="flex items-center justify-between mb-4">
+                 <div className="flex items-center space-x-3">
+                    <div className="p-2.5 bg-rose-50 rounded-xl text-rose-500"><Calendar size={20}/></div>
+                    <div className="font-black text-slate-900 text-lg">盈亏热力</div>
+                 </div>
+            </div>
+            <div className="w-full overflow-x-auto custom-scrollbar pb-2">
+                 {(!historyData || historyData.length === 0) ? (
+                    <div className="w-full h-24 flex items-center justify-center text-slate-400 text-xs font-bold bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">每日 15:05 更新</div>
+                 ) : (
+                    <div className="flex gap-2.5">
+                       {historyData.slice(-14).map((day, idx) => (
+                          <div key={idx} className="group relative flex-shrink-0 text-center">
+                              <div className={`w-12 h-16 rounded-xl ${day.profit > 0 ? 'bg-rose-400' : 'bg-emerald-400'} flex items-center justify-center text-white text-[10px] font-bold shadow-sm`}>{day.date}</div>
+                              <div className="mt-2 text-[10px] font-bold text-slate-400">{day.profit > 0 ? '+' : ''}{day.profit.toFixed(0)}</div>
+                          </div>
+                       ))}
+                    </div>
+                 )}
+            </div>
+        </div>
+
+        <div className="bg-gradient-to-br from-indigo-500 to-purple-700 rounded-[2.5rem] p-8 text-white shadow-xl shadow-indigo-200 flex flex-col justify-center relative overflow-hidden">
+             <Zap size={120} className="absolute -bottom-4 -right-4 text-white/10 rotate-12" />
+             <div className="relative z-10">
+                <div className="text-[10px] font-black uppercase tracking-widest opacity-80 mb-2">AI 市场情绪</div>
+                <div className="text-2xl font-black leading-tight mb-4">{getMarketComment()}</div>
+                <div className="flex items-center space-x-4 text-xs font-bold opacity-80">
+                   <div>📈 {stockStats.winCount + fundStats.winCount} 上涨</div>
+                   <div>📉 {(stockStats.totalCount + fundStats.totalCount) - (stockStats.winCount + fundStats.winCount)} 下跌</div>
+                </div>
              </div>
-           </div>
-           <div className="text-3xl font-black opacity-20 italic">MARKET</div>
-        </div>
-
-        {/* 盈利分布 */}
-        <div className="bg-white rounded-3xl p-6 border border-slate-200 flex items-center justify-around shadow-sm">
-           <div className="text-center">
-              <div className="text-slate-400 text-[10px] font-black uppercase mb-1">今日领涨标的</div>
-              <div className="text-2xl font-black text-rose-500">{stockStats.winCount + fundStats.winCount} <span className="text-xs text-slate-300">/ {stockStats.totalCount + fundStats.totalCount}</span></div>
-           </div>
-           <div className="w-px h-8 bg-slate-100"></div>
-           <div className="text-center">
-              <div className="text-slate-400 text-[10px] font-black uppercase mb-1">今日领跌标的</div>
-              <div className="text-2xl font-black text-emerald-500">{(stockStats.totalCount + fundStats.totalCount) - (stockStats.winCount + fundStats.winCount)} <span className="text-xs text-slate-300">/ {stockStats.totalCount + fundStats.totalCount}</span></div>
-           </div>
         </div>
       </div>
-
-      {/* 底部：资产配置分布进度条 */}
-      <div className="bg-white px-10 py-6 rounded-[2rem] border border-slate-200 shadow-sm flex flex-col md:flex-row items-center md:space-x-10 space-y-4 md:space-y-0">
-         <div className="text-xs font-black text-slate-900 uppercase tracking-widest flex items-center shrink-0">
-            <PieChart size={18} className="mr-3 text-indigo-600"/> 资产配置占比
-         </div>
-         <div className="flex-1 w-full relative h-6 bg-slate-100 rounded-full ring-8 ring-slate-50 overflow-hidden flex shadow-inner">
-            <div className="h-full bg-indigo-600 transition-all duration-1000 shadow-lg relative z-10" style={{width: `${totalAssets > 0 ? (stockStats.marketVal/totalAssets)*100 : 0}%`}}></div>
-            <div className="h-full bg-purple-500 transition-all duration-1000 shadow-lg relative z-20" style={{width: `${totalAssets > 0 ? (fundStats.marketVal/totalAssets)*100 : 0}%`}}></div>
-            <div className="h-full bg-emerald-500 transition-all duration-1000 shadow-lg relative z-30" style={{width: `${totalAssets > 0 ? (fixedStats.totalPrincipal/totalAssets)*100 : 0}%`}}></div>
-         </div>
-         <div className="flex space-x-6 text-[11px] font-black text-slate-600 tracking-tight shrink-0">
-            <div className="flex items-center"><div className="w-3 h-3 rounded-full bg-indigo-600 mr-2 shadow-sm"></div> 股票 {totalAssets > 0 ? ((stockStats.marketVal/totalAssets)*100).toFixed(0) : 0}%</div>
-            <div className="flex items-center"><div className="w-3 h-3 rounded-full bg-purple-500 mr-2 shadow-sm"></div> 基金 {totalAssets > 0 ? ((fundStats.marketVal/totalAssets)*100).toFixed(0) : 0}%</div>
-            <div className="flex items-center"><div className="w-3 h-3 rounded-full bg-emerald-500 mr-2 shadow-sm"></div> 固收 {totalAssets > 0 ? ((fixedStats.totalPrincipal/totalAssets)*100).toFixed(0) : 0}%</div>
-         </div>
-      </div>
-
-      {/* 原有持仓明细组件 */}
-      <AssetCards stocks={customStocks} funds={customFunds} fixedIncome={fixedIncome} />
     </div>
   );
 };
