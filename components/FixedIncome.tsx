@@ -1,351 +1,526 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { 
-  Plus, Trash2, Edit2, Wallet, Calendar, 
-  TrendingUp, Clock, PiggyBank, Briefcase, 
-  Target, StickyNote, Coins, ArrowUpRight
+  TrendingUp, Trash2, Edit3, Search, 
+  Clock, Plus, X, Save, Wallet, 
+  Layers, ArrowUpDown, Zap, Calculator, Briefcase,
+  CalendarDays, ArrowUpRight, ArrowDownRight, Tag, AlertCircle, Coins
 } from 'lucide-react';
-import { FixedAsset } from '../types';
 
-interface FixedIncomeProps {
+// --- 类型定义 ---
+interface FixedAsset {
+  id: string | number;
+  name: string;
+  code?: string;
+  
+  costPrice?: number | string;   
+  quantity?: number | string;    
+  startDate?: string;            
+  
+  marketValue?: number | string; 
+  totalProfit?: number | string;
+  daysHeld?: number | string;
+  
+  recordDate?: string;
+  tag?: string;
+  apy?: number | string;
+  extra?: string;
+}
+
+interface FixedIncomeListProps {
   items: FixedAsset[];
-  onDelete: (code: string) => void;
+  onDelete: (id: string | number) => void;
   onEdit: (asset: any) => void;
   onAdd: (asset: any) => void;
 }
 
-const FixedIncome: React.FC<FixedIncomeProps> = ({ items, onDelete, onEdit, onAdd }) => {
+type SortField = 'marketValue' | 'totalProfit' | 'projectedDaily' | 'annualizedYield' | 'daysHeld' | 'dailyPer10k';
+type SortDirection = 'asc' | 'desc';
+
+const BANK_RATE = 2.0;
+
+// --- 🛡️ 强力数字解析 ---
+const safeNum = (val: any): number => {
+  if (val === null || val === undefined || val === '') return 0;
+  if (typeof val === 'number') return val;
+  const strVal = String(val).replace(/,/g, ''); 
+  const n = Number(strVal);
+  return isNaN(n) ? 0 : n;
+};
+
+const fmt = (val: any, decimals: number = 2) => {
+  return safeNum(val).toLocaleString(undefined, { 
+    minimumFractionDigits: decimals, 
+    maximumFractionDigits: decimals 
+  });
+};
+
+const FixedIncomeList: React.FC<FixedIncomeListProps> = ({ items = [], onDelete, onEdit, onAdd }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
-  const [editCode, setEditCode] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  
+  const [sortField, setSortField] = useState<SortField>('marketValue');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
 
-  // 表单数据
   const [formData, setFormData] = useState({
-    name: '',
-    principal: '',    // 总投入本金
-    currentValue: '', // 当前总市值
-    date: '',         // 首次买入日/主要更新日
-    type: '稳健',      // 标签
-    note: ''          // 备注 (记录加仓情况)
+    id: '', code: '', name: '', marketValue: '', totalProfit: '', daysHeld: '', 
+    recordDate: '', tag: '稳健', apy: '', extra: ''
   });
 
-  // --- 1. 核心计算逻辑 ---
-  const calculatedItems = useMemo(() => {
-    const today = new Date();
-    
-    return items.map(item => {
-      const principal = Number(item.quantity); // quantity 存本金
-      // costPrice 存当前市值 (如果没有录入过，暂用本金代替)
-      const marketValue = Number(item.costPrice) > 0 ? Number(item.costPrice) : principal;
-      
-      const totalProfit = marketValue - principal;
-      const totalYield = principal > 0 ? (totalProfit / principal) * 100 : 0;
+  const [autoCalcInfo, setAutoCalcInfo] = useState({ roi: 0, apy: 0, daily: 0 });
 
-      // 计算持有天数
-      let daysHeld = 1; 
-      if (item.startDate) {
-        const start = new Date(item.startDate);
-        const diffTime = Math.abs(today.getTime() - start.getTime());
-        daysHeld = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) || 1; 
+  // --- 1. 数据清洗与核心计算 ---
+  const processedItems = useMemo(() => {
+    const safeItems = Array.isArray(items) ? items : [];
+
+    let result = safeItems.map(item => {
+      if (!item) return null;
+
+      const rawMarketVal = item.marketValue ?? item.costPrice ?? item.currentValue;
+      const rawProfit = item.totalProfit ?? item.profit;
+      const rawPrincipal = item.quantity ?? item.principal; 
+
+      let marketVal = safeNum(rawMarketVal);
+      let profit = safeNum(rawProfit);
+      
+      // 🔥 修复Bug：天数计算精度修正 (365天不变成366)
+      let d = safeNum(item.daysHeld ?? item.days); 
+
+      // 如果没有直接存天数，尝试反推
+      if (d <= 0 && item.startDate) {
+          const start = new Date(item.startDate);
+          // 逻辑修正：强制把时间归零到午夜，消除时分秒带来的误差
+          start.setHours(0, 0, 0, 0);
+          
+          const endStr = item.recordDate ? item.recordDate : new Date().toISOString().split('T')[0];
+          const end = new Date(endStr);
+          end.setHours(0, 0, 0, 0);
+
+          if (!isNaN(start.getTime()) && !isNaN(end.getTime())) {
+              const diff = end.getTime() - start.getTime();
+              // 使用 round 避免浮点数误差
+              d = Math.round(diff / (1000 * 60 * 60 * 24));
+          }
+      }
+      
+      if (d <= 0) d = 1; // 保底
+
+      if (profit === 0 && safeNum(rawPrincipal) > 0 && marketVal > 0) {
+          profit = marketVal - safeNum(rawPrincipal);
+      }
+      
+      let finalPrincipal = safeNum(rawPrincipal);
+      if (finalPrincipal === 0 && marketVal !== 0 && profit !== 0) {
+          finalPrincipal = marketVal - profit;
       }
 
-      // 核心指标 1: 推算年化 (CAGR)
-      const annualizedYield = (totalYield / daysHeld) * 365;
+      const totalRoi = finalPrincipal > 0 ? (profit / finalPrincipal) * 100 : 0;
+      const historicalApy = (totalRoi / d) * 365;
+      const calcApy = item.apy ? safeNum(item.apy) : historicalApy;
+      const projectedDaily = marketVal * (calcApy / 100) / 365;
+      const beatsBank = calcApy > BANK_RATE;
 
-      // 核心指标 2: 日均收益 (Daily Earn) - 解决加仓焦虑
-      const dailyEarn = totalProfit / daysHeld;
+      const dailyPer10k = 10000 * (calcApy / 100) / 365;
+      const projectedAnnual = marketVal * (calcApy / 100);
 
       return {
         ...item,
-        marketValue,
-        totalProfit,
-        totalYield,
-        daysHeld,
-        annualizedYield,
-        dailyEarn
+        code: item.code || '',
+        marketValue: marketVal, 
+        totalProfit: profit,
+        daysHeld: d,
+        principal: finalPrincipal,
+        totalRoi,
+        historicalApy,
+        calcApy,
+        projectedDaily,
+        dailyPer10k,
+        projectedAnnual,
+        beatsBank,
+        recordDate: item.recordDate || new Date().toISOString().split('T')[0]
       };
-    });
-  }, [items]);
+    }).filter(Boolean) as any[]; 
 
-  // --- 2. 汇总统计 ---
+    if (searchTerm) {
+      const lower = searchTerm.toLowerCase();
+      result = result.filter(i => 
+        (i.name && i.name.toLowerCase().includes(lower)) || 
+        (i.tag && i.tag.toLowerCase().includes(lower))
+      );
+    }
+
+    result.sort((a, b) => {
+      let valA = 0, valB = 0;
+      switch (sortField) {
+        case 'marketValue': valA = a.marketValue; valB = b.marketValue; break;
+        case 'totalProfit': valA = a.totalProfit; valB = b.totalProfit; break;
+        case 'projectedDaily': valA = a.projectedDaily; valB = b.projectedDaily; break;
+        case 'annualizedYield': valA = a.calcApy; valB = b.calcApy; break;
+        case 'daysHeld': valA = a.daysHeld; valB = b.daysHeld; break;
+        case 'dailyPer10k': valA = a.dailyPer10k; valB = b.dailyPer10k; break;
+      }
+      return sortDirection === 'asc' ? valA - valB : valB - valA;
+    });
+
+    return result;
+  }, [items, searchTerm, sortField, sortDirection]);
+
+  // --- 2. 汇总 ---
   const totals = useMemo(() => {
-    const totalPrincipal = calculatedItems.reduce((acc, item) => acc + Number(item.quantity), 0);
-    const totalValue = calculatedItems.reduce((acc, item) => acc + item.marketValue, 0);
+    const totalPrincipal = processedItems.reduce((acc, i) => acc + i.principal, 0);
+    const totalValue = processedItems.reduce((acc, i) => acc + i.marketValue, 0);
     const totalProfit = totalValue - totalPrincipal;
-    const totalYield = totalPrincipal > 0 ? (totalProfit / totalPrincipal) * 100 : 0;
+    const totalRate = totalPrincipal > 0 ? (totalProfit / totalPrincipal) * 100 : 0;
+    const totalProjectedDaily = processedItems.reduce((acc, i) => acc + i.projectedDaily, 0);
+
+    return { totalPrincipal, totalValue, totalProfit, totalRate, totalProjectedDaily };
+  }, [processedItems]);
+
+  // --- 3. 实时计算 ---
+  useEffect(() => {
+    if (!isModalOpen) return;
+    const m = safeNum(formData.marketValue);
+    const p = safeNum(formData.totalProfit);
+    const d = safeNum(formData.daysHeld) || 1;
     
-    // 总日均收益
-    const totalDailyEarn = calculatedItems.reduce((acc, item) => acc + item.dailyEarn, 0);
+    const principal = m - p;
+    const roi = principal > 0 ? (p / principal) * 100 : 0;
+    const autoApy = (roi / d) * 365;
+    const usedApy = formData.apy ? safeNum(formData.apy) : autoApy;
+    const daily = m * (usedApy / 100) / 365;
 
-    return { totalPrincipal, totalProfit, totalValue, totalYield, totalDailyEarn };
-  }, [calculatedItems]);
+    setAutoCalcInfo({ roi, apy: autoApy, daily });
+  }, [formData.marketValue, formData.totalProfit, formData.daysHeld, formData.apy, isModalOpen]);
 
-  // --- 交互逻辑 ---
-  const openAddModal = () => {
-    setIsEditing(false);
-    setFormData({ 
-      name: '', principal: '', currentValue: '', 
-      date: new Date().toISOString().split('T')[0],
-      type: '稳健',
-      note: ''
-    });
-    setIsModalOpen(true);
+  // --- 交互 ---
+  const handleSort = (f: SortField) => {
+    if (sortField === f) setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    else { setSortField(f); setSortDirection('desc'); }
   };
 
+  const openAddModal = () => { 
+    setFormData({ id: '', code: '', name: '', marketValue: '', totalProfit: '', daysHeld: '', recordDate: new Date().toISOString().split('T')[0], tag: '稳健', apy: '', extra: '' }); 
+    setIsEditing(false); 
+    setIsModalOpen(true); 
+  };
+  
   const openEditModal = (item: any) => {
-    setIsEditing(true);
-    setEditCode(item.code);
     setFormData({
+      id: item.id,
+      code: item.code,
       name: item.name,
-      principal: item.quantity.toString(),
-      currentValue: (item.costPrice || item.quantity).toString(),
-      date: item.startDate || '',
-      type: item.tag || '稳健',
-      note: item.note || '' // 假设后端支持 note 字段，如果不支持也没事，前端暂存
+      marketValue: String(item.marketValue),
+      totalProfit: String(item.totalProfit),
+      daysHeld: String(item.daysHeld),
+      recordDate: item.recordDate || new Date().toISOString().split('T')[0],
+      tag: item.tag || '稳健',
+      apy: item.apy ? String(item.apy) : '',
+      extra: item.extra || ''
     });
+    setIsEditing(true);
     setIsModalOpen(true);
   };
 
   const handleSubmit = () => {
-    if (!formData.name || !formData.principal || !formData.currentValue) {
-      alert("请完整填写信息");
-      return;
-    }
-
-    const principal = Number(formData.principal);
-    const currentVal = Number(formData.currentValue);
+    if (!formData.name || !formData.marketValue) return alert("请至少填写名称和当前市值");
+    const marketVal = safeNum(formData.marketValue);
+    const profit = safeNum(formData.totalProfit);
+    const principal = marketVal - profit; 
+    const days = safeNum(formData.daysHeld) || 1;
+    
+    const startDateObj = new Date();
+    startDateObj.setDate(startDateObj.getDate() - days);
+    const derivedStartDate = startDateObj.toISOString().split('T')[0];
+    const uniqueCode = formData.code || `FIX_${Date.now()}_${Math.floor(Math.random()*1000)}`;
 
     const assetData = {
+      id: isEditing ? formData.id : undefined,
+      code: uniqueCode,
       name: formData.name,
-      code: isEditing && editCode ? editCode : `WEALTH_${Date.now()}`,
-      quantity: principal,     // 本金
-      costPrice: currentVal,   // 市值
-      startDate: formData.date,
-      asset_type: 'fixed',
-      tag: formData.type,
-      // 这里的 note 如果后端没字段，可以拼接到 name 里或者忽略，暂时先传给后端
-      // 建议后端加个 extra 字段存这类信息
-      extra: formData.note 
+      marketValue: marketVal, costPrice: marketVal, 
+      quantity: principal, principal: principal, 
+      totalProfit: profit, daysHeld: days, startDate: derivedStartDate,
+      recordDate: formData.recordDate, tag: formData.tag, apy: safeNum(formData.apy), extra: formData.extra,
+      asset_type: 'fixed'
     };
-
     isEditing ? onEdit(assetData) : onAdd(assetData);
     setIsModalOpen(false);
   };
 
   return (
-    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700 relative">
+    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500 relative max-w-[1600px] mx-auto px-4 pt-2 pb-4">
       
-      {/* ======================= 1. 顶部统计区 ======================= */}
-      <div className="flex flex-col lg:flex-row gap-4">
-        
-        {/* 左卡：总市值 */}
-        <div className="flex-[1.2] bg-slate-900 rounded-[2.5rem] p-6 text-white shadow-xl shadow-slate-900/20 relative overflow-hidden group">
-           <div className="absolute right-0 top-0 w-32 h-32 bg-slate-800 rounded-full -mr-10 -mt-10 opacity-50 group-hover:scale-110 transition-transform duration-500"></div>
-           <div className="relative z-10 flex justify-between items-start h-full">
+      {/* 顶部统计区 (保持紧凑完美布局) */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* 市值 */}
+        <div className="bg-gradient-to-br from-slate-800 to-slate-900 rounded-2xl p-5 text-white shadow-lg relative overflow-hidden">
+           <div className="flex justify-between items-start relative z-10">
              <div>
-               <p className="text-[10px] font-black uppercase opacity-60 mb-2 tracking-widest flex items-center">
-                 <Briefcase size={12} className="mr-1"/> 理财总市值
-               </p>
-               <p className="text-3xl font-mono font-black tracking-tight">¥{totals.totalValue.toLocaleString(undefined, {maximumFractionDigits: 0})}</p>
-               
-               <div className="mt-3 flex items-center space-x-2 bg-slate-800/50 w-fit px-3 py-1 rounded-lg backdrop-blur-md border border-slate-700/50">
-                  <Wallet size={10} className="text-slate-300"/>
-                  <span className="text-[10px] text-slate-200 font-bold">本金: ¥{totals.totalPrincipal.toLocaleString(undefined, {maximumFractionDigits:0})}</span>
-               </div>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1 flex items-center">
+                   <Briefcase size={10} className="mr-1"/> 理财总市值
+                </p>
+                <div className="text-2xl font-mono font-black tracking-tight">¥{fmt(totals.totalValue)}</div>
              </div>
-             <div className="p-4 bg-white/10 rounded-2xl backdrop-blur-sm"><PiggyBank size={24} className="text-slate-200"/></div>
+             <div className="p-2 bg-white/10 rounded-lg backdrop-blur-sm"><Wallet size={16} className="text-indigo-200" /></div>
+           </div>
+           <div className="mt-3 relative z-10">
+             <span className="text-lg font-bold text-slate-200 bg-slate-700/50 px-2 py-1 rounded border border-slate-600">
+               本金: ¥{fmt(totals.totalPrincipal, 0)}
+             </span>
            </div>
         </div>
 
-        {/* 中卡：收益分析 */}
-        <div className="flex-1 bg-white rounded-[2.5rem] p-6 border border-slate-100 shadow-sm flex justify-between items-center relative overflow-hidden">
-           <div>
-               <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">累计收益 / 日均赚</p>
-               <div className={`text-3xl font-black ${totals.totalProfit >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
-                  {totals.totalProfit >= 0 ? '+' : ''}{totals.totalProfit.toLocaleString(undefined, {maximumFractionDigits: 2})}
-               </div>
-               <div className="flex items-center space-x-2 mt-1">
-                  <span className="text-[10px] font-bold text-slate-400 bg-slate-50 px-1.5 py-0.5 rounded">总回报 {totals.totalYield.toFixed(2)}%</span>
-                  <span className="text-[10px] font-bold text-rose-500 bg-rose-50 px-1.5 py-0.5 rounded flex items-center">
-                     <Coins size={10} className="mr-1"/> 日均 +{totals.totalDailyEarn.toFixed(1)}元
-                  </span>
-               </div>
+        {/* 收益 */}
+        <div className={`rounded-2xl p-5 shadow-lg relative overflow-hidden transition-all ${totals.totalProfit >= 0 ? 'bg-gradient-to-br from-rose-500 to-rose-600 text-white' : 'bg-gradient-to-br from-emerald-500 to-emerald-600 text-white'}`}>
+           <div className="flex justify-between items-start relative z-10">
+             <div>
+                <p className="text-[10px] font-bold text-white/80 uppercase tracking-widest mb-1">累计总收益</p>
+                <div className="text-2xl font-black tracking-tight">
+                  {totals.totalProfit >= 0 ? '+' : ''}{fmt(totals.totalProfit)}
+                </div>
+             </div>
+             <div className="p-2 bg-white/20 rounded-lg backdrop-blur-sm"><TrendingUp size={16} className="text-white" /></div>
            </div>
-           <div className={`p-4 rounded-2xl ${totals.totalProfit >= 0 ? 'bg-rose-50 text-rose-500' : 'bg-emerald-50 text-emerald-500'}`}>
-              <TrendingUp size={24} />
+           <div className="mt-3 relative z-10">
+             <span className="text-sm font-bold text-white bg-white/20 px-2 py-1 rounded backdrop-blur-md">
+               总回报率 {fmt(totals.totalRate)}%
+             </span>
            </div>
         </div>
 
-        {/* 右钮：添加 */}
-        <button onClick={openAddModal} className="flex-none bg-indigo-600 hover:bg-indigo-700 text-white rounded-[2.5rem] px-8 flex flex-col items-center justify-center transition-all shadow-xl shadow-indigo-600/20 active:scale-95 group min-w-[100px]">
-            <div className="p-2.5 bg-white/10 rounded-full mb-1 group-hover:bg-white/20 transition-colors"><Plus size={20} /></div>
-            <span className="text-[10px] font-black uppercase tracking-widest">记一笔</span>
-        </button>
+        {/* 日赚 */}
+        <div className="bg-gradient-to-br from-indigo-500 to-blue-600 rounded-2xl p-5 text-white shadow-lg relative overflow-hidden">
+           <div className="flex justify-between items-start relative z-10">
+             <div>
+                <p className="text-[10px] font-bold text-indigo-100 uppercase tracking-widest mb-1 flex items-center">
+                   <Zap size={10} className="mr-1 fill-current"/> 明日预计躺赚
+                </p>
+                <div className="text-3xl font-black tracking-tight">+{fmt(totals.totalProjectedDaily)}</div>
+             </div>
+             <div className="absolute right-4 bottom-4 opacity-20"><Calculator size={60} /></div>
+           </div>
+           <div className="mt-3 relative z-10">
+              <p className="text-sm font-bold text-indigo-50 bg-black/20 w-fit px-2 py-1 rounded">
+                相当于日薪加鸡腿
+              </p>
+           </div>
+        </div>
       </div>
 
-      {/* ======================= 2. 列表区域 ======================= */}
-      <div className="bg-white rounded-[2.5rem] shadow-sm border border-slate-200 overflow-hidden min-h-[500px]">
-        {/* 顶栏 */}
-        <div className="flex flex-col md:flex-row justify-between items-center px-8 py-6 border-b border-slate-100 gap-4">
+      {/* 列表区域 */}
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden min-h-[500px]">
+        <div className="flex flex-col md:flex-row justify-between items-center px-6 py-4 border-b border-slate-100 gap-4">
             <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center"><Briefcase size={20}/></div>
-                <div>
-                    <h2 className="text-xl font-black text-slate-900">理财资产列表</h2>
-                    <p className="text-xs font-bold text-slate-400">{items.length} 笔资产 · <span className="text-indigo-600">净值/市值管理</span></p>
+                <div className="w-8 h-8 bg-indigo-50 text-indigo-600 rounded-lg flex items-center justify-center"><Layers size={16}/></div>
+                <h2 className="text-lg font-black text-slate-900">理财/固收快照</h2>
+            </div>
+            
+            <div className="flex gap-3 w-full md:w-auto">
+                <div className="relative group flex-1 md:w-64">
+                    <Search className="absolute left-3 top-2.5 text-slate-400 group-focus-within:text-indigo-500 transition-colors" size={14} />
+                    <input type="text" placeholder="搜索..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full bg-slate-50 border border-slate-200 pl-9 pr-4 py-2 rounded-xl font-bold text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all" />
                 </div>
+                <button onClick={openAddModal} className="flex items-center gap-1 bg-slate-900 hover:bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold text-xs shadow-lg shadow-slate-900/10 active:scale-95 transition-all whitespace-nowrap">
+                    <Plus size={14} strokeWidth={3} /> 记一笔
+                </button>
             </div>
         </div>
 
-        {/* 表格 */}
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="bg-slate-50/50">
-                <th className="p-6 text-xs font-black text-slate-400 uppercase tracking-widest">产品名称</th>
-                <th className="p-6 text-xs font-black text-slate-400 uppercase tracking-widest text-right">总投入 / 更新日</th>
-                <th className="p-6 text-xs font-black text-slate-400 uppercase tracking-widest text-right">当前市值 (¥)</th>
-                <th className="p-6 text-xs font-black text-slate-400 uppercase tracking-widest text-right">累计收益 (¥)</th>
-                <th className="p-6 text-xs font-black text-slate-400 uppercase tracking-widest text-right">日均收益 / 年化</th>
-                <th className="p-6 text-xs font-black text-slate-400 uppercase tracking-widest text-center">操作</th>
+              {/* 🔥 布局优化：8列布局，缓解拥挤 */}
+              <tr className="bg-slate-50/50 border-b border-slate-200">
+                <th className="p-4 text-xs font-black text-slate-400 uppercase tracking-widest cursor-pointer hover:text-indigo-600" onClick={() => handleSort('marketValue')}>产品</th>
+                <th className="p-4 text-xs font-black text-slate-400 uppercase tracking-widest text-right cursor-pointer hover:text-indigo-600" onClick={() => handleSort('marketValue')}>市值</th>
+                <th className="p-4 text-xs font-black text-slate-400 uppercase tracking-widest text-right cursor-pointer hover:text-indigo-600" onClick={() => handleSort('totalProfit')}>总回报</th>
+                <th className="p-4 text-xs font-black text-slate-400 uppercase tracking-widest text-right cursor-pointer hover:text-indigo-600" onClick={() => handleSort('daysHeld')}>时间</th>
+                <th className="p-4 text-xs font-black text-slate-400 uppercase tracking-widest text-right cursor-pointer hover:text-indigo-600" onClick={() => handleSort('projectedDaily')}>日赚</th>
+                <th className="p-4 text-xs font-black text-slate-400 uppercase tracking-widest text-right cursor-pointer hover:text-indigo-600" onClick={() => handleSort('annualizedYield')}>年化</th>
+                <th className="p-4 text-xs font-black text-slate-400 uppercase tracking-widest text-right cursor-pointer hover:text-indigo-600" onClick={() => handleSort('dailyPer10k')}>万份/年收</th>
+                <th className="p-4 text-xs font-black text-slate-400 uppercase tracking-widest text-center">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {calculatedItems.map((item) => (
-                <tr key={item.code} className="hover:bg-indigo-50/30 transition-colors group">
-                  
-                  {/* 名称 + 标签 + 备注 */}
-                  <td className="p-6">
-                    <div className="flex flex-col">
-                      <div className="flex items-center space-x-2 mb-0.5">
-                          <span className="text-sm font-black text-slate-900">{item.name}</span>
-                          <span className="text-[10px] font-bold text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100">
-                             {item.tag || '理财'}
-                          </span>
+              {processedItems.map((item) => {
+                const positionRatio = totals.totalValue > 0 ? (item.marketValue / totals.totalValue) * 100 : 0;
+
+                return (
+                  <tr key={item.id} className="hover:bg-slate-50/50 transition-colors group text-sm">
+                    {/* 1. 产品列：名称 + 标签 + 备注 */}
+                    <td className="p-4 align-top">
+                      <div className="flex flex-col gap-1.5">
+                        <span className="font-bold text-slate-900">{item.name}</span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                           <span className="text-[10px] font-bold text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100 flex items-center">
+                             <Tag size={8} className="mr-1"/>{item.tag || '稳健'}
+                           </span>
+                           {item.extra && <span className="text-[10px] text-slate-400 border border-slate-100 px-1 rounded">{item.extra}</span>}
+                        </div>
                       </div>
-                      {/* 显示备注或加仓提示 */}
-                      {item.extra ? (
-                         <div className="flex items-center text-[10px] text-slate-400">
-                            <StickyNote size={10} className="mr-1"/> {item.extra}
-                         </div>
-                      ) : (
-                         <span className="text-[10px] text-slate-400 opacity-50">无备注</span>
-                      )}
-                    </div>
-                  </td>
+                    </td>
 
-                  {/* 投入 / 日期 */}
-                  <td className="p-6 text-right">
-                    <div className="flex flex-col items-end">
-                       <span className="text-sm font-mono font-bold text-slate-700">¥{Number(item.quantity).toLocaleString()}</span>
-                       <span className="text-[10px] font-bold text-slate-400 flex items-center mt-0.5">
-                          <Clock size={10} className="mr-1"/> {item.startDate} ({item.daysHeld}天)
-                       </span>
-                    </div>
-                  </td>
+                    {/* 2. 市值列：数值 + 进度条 */}
+                    <td className="p-4 text-right align-top">
+                      <div className="flex flex-col items-end gap-1">
+                        <span className="font-mono font-bold text-slate-900">¥{fmt(item.marketValue)}</span>
+                        <div className="flex items-center justify-end gap-2 w-full max-w-[120px]">
+                            <div className="w-16 h-1 bg-slate-100 rounded-full overflow-hidden">
+                                <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${positionRatio}%` }}></div>
+                            </div>
+                            <span className="text-[9px] font-bold text-indigo-500">{positionRatio.toFixed(1)}%</span>
+                        </div>
+                      </div>
+                    </td>
 
-                  {/* 当前市值 */}
-                  <td className="p-6 text-right">
-                     <span className="text-sm font-mono font-black text-slate-900">¥{item.marketValue.toLocaleString(undefined, {maximumFractionDigits: 2})}</span>
-                  </td>
-
-                  {/* 累计收益 */}
-                  <td className="p-6 text-right">
-                    <div className="flex flex-col items-end">
-                      <span className={`text-sm font-black ${item.totalProfit >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
-                        {item.totalProfit >= 0 ? '+' : ''}{item.totalProfit.toLocaleString(undefined, {maximumFractionDigits: 2})}
-                      </span>
-                      <span className={`text-[10px] font-bold ${item.totalProfit >= 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                         回报率 {item.totalYield.toFixed(2)}%
-                      </span>
-                    </div>
-                  </td>
-
-                  {/* 🔥核心指标：日均 + 年化 */}
-                  <td className="p-6 text-right">
-                    <div className="flex flex-col items-end">
-                        <span className={`text-sm font-black ${item.dailyEarn >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
-                           {item.dailyEarn >= 0 ? '+' : ''}{item.dailyEarn.toFixed(2)} /天
+                    {/* 3. 总回报列：收益 + 收益率 */}
+                    <td className="p-4 text-right align-top">
+                      <div className="flex flex-col items-end gap-0.5">
+                        <span className={`font-bold text-lg ${item.totalProfit >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
+                          {item.totalProfit >= 0 ? '+' : ''}{fmt(item.totalProfit)}
                         </span>
-                        <div className="flex items-center mt-0.5 space-x-1">
-                            <Target size={10} className="text-slate-400" />
-                            <span className="text-[10px] font-bold text-slate-500">
-                               年化 {item.annualizedYield.toFixed(2)}%
+                        <span className={`text-[10px] font-bold ${item.totalProfit >= 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                           {fmt(item.totalRoi)}%
+                        </span>
+                      </div>
+                    </td>
+
+                    {/* 4. 时间列（新）：持有天数 + 记录日期 */}
+                    <td className="p-4 text-right align-top">
+                        <div className="flex flex-col items-end gap-1">
+                            <span className="font-bold text-slate-700 flex items-center">
+                               <Clock size={12} className="mr-1 text-slate-400"/> {item.daysHeld}天
+                            </span>
+                            <span className="text-[9px] text-slate-400 flex items-center bg-slate-50 px-1.5 py-0.5 rounded">
+                               <CalendarDays size={8} className="mr-1"/> {item.recordDate}
                             </span>
                         </div>
-                    </div>
-                  </td>
+                    </td>
 
-                  {/* 操作 */}
-                  <td className="p-6 text-right">
-                    <div className="flex items-center justify-center space-x-2 opacity-50 group-hover:opacity-100 transition-all">
-                      <button onClick={() => openEditModal(item)} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl"><Edit2 size={16} /></button>
-                      <button onClick={() => { if(window.confirm(`确认删除 ${item.name}?`)) onDelete(item.code) }} className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl"><Trash2 size={16} /></button>
-                    </div>
-                  </td>
+                    {/* 5. 日赚列：数值 + 依据 */}
+                    <td className="p-4 text-right align-top">
+                        <div className="flex flex-col items-end gap-0.5">
+                             <span className="text-base font-mono font-black text-indigo-600">
+                               + {fmt(item.projectedDaily)}
+                             </span>
+                             <span className="text-[9px] text-indigo-300">
+                               按 {fmt(item.calcApy)}% 估算
+                             </span>
+                        </div>
+                    </td>
+
+                    {/* 6. 年化效率列：数值 + 对比 */}
+                    <td className="p-4 text-right align-top">
+                        <div className="flex flex-col items-end gap-0.5">
+                            <div className="flex items-center gap-1">
+                               <span className={`font-bold text-sm ${item.beatsBank ? 'text-rose-500' : 'text-emerald-500'}`}>
+                                   {fmt(item.calcApy)}%
+                               </span>
+                               {item.beatsBank ? <ArrowUpRight size={12} className="text-rose-500"/> : <ArrowDownRight size={12} className="text-emerald-500"/>}
+                            </div>
+                            <span className="text-[9px] text-slate-400">
+                                {item.beatsBank ? '跑赢存款' : '跑输存款'}
+                            </span>
+                        </div>
+                    </td>
+
+                    {/* 7. 万份/年收列（新）：单独展示，不再拥挤 */}
+                    <td className="p-4 text-right align-top">
+                        <div className="flex flex-col items-end gap-1">
+                            <span className="text-[10px] text-slate-600 font-bold bg-slate-100 px-1.5 py-0.5 rounded flex items-center">
+                               <Coins size={9} className="mr-1 text-slate-400"/> 万份 {fmt(item.dailyPer10k, 4)}
+                            </span>
+                            <span className="text-[9px] text-slate-400">
+                               年收约 {fmt(item.projectedAnnual, 0)}
+                            </span>
+                        </div>
+                    </td>
+
+                    <td className="p-4 text-center align-top">
+                      <div className="flex items-center justify-center space-x-1 opacity-0 group-hover:opacity-100 transition-all">
+                        <button onClick={() => openEditModal(item)} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg"><Edit3 size={14} /></button>
+                        <button onClick={() => { if(window.confirm(`确认删除?`)) onDelete(item.id) }} className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg"><Trash2 size={14} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {processedItems.length === 0 && (
+                <tr>
+                   <td colSpan={8} className="py-20 text-center text-slate-400 flex flex-col items-center justify-center w-full">
+                      <AlertCircle size={32} className="mb-2 opacity-50"/>
+                      <span className="font-bold">暂无有效理财记录</span>
+                   </td>
                 </tr>
-              ))}
-              {items.length === 0 && (
-                <tr><td colSpan={6} className="py-20 text-center text-slate-400 font-bold">暂无理财记录</td></tr>
               )}
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* 🟢 弹窗：录入市值 */}
+      {/* 弹窗 (保持不变) */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
-          <div className="bg-white rounded-[2rem] w-full max-w-md p-8 shadow-2xl scale-100 animate-in zoom-in-95 duration-200">
-            <div className="flex justify-between items-center mb-6">
-                <h2 className="text-xl font-black text-slate-900 flex items-center">
-                   {isEditing ? '更新资产' : '记一笔'}
-                </h2>
-                <div className="bg-indigo-50 text-indigo-600 text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wider">Wealth Management</div>
-            </div>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+             <div className="p-6">
+                <div className="flex justify-between items-center mb-6">
+                   <h3 className="text-lg font-black text-slate-900">{isEditing ? '更新记录' : '记一笔'}</h3>
+                   <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-full text-slate-400"><X size={18}/></button>
+                </div>
+                
+                <div className="space-y-4">
+                   <div>
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">产品名称</label>
+                      <input type="text" placeholder="如：招商朝朝宝" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-sm focus:border-indigo-500 outline-none" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
+                   </div>
+                   
+                   <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">当前市值(含收益)</label>
+                        <input type="number" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-mono text-sm focus:border-indigo-500 outline-none" value={formData.marketValue} onChange={e => setFormData({...formData, marketValue: e.target.value})} />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">已获收益</label>
+                        <input type="number" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-mono text-sm focus:border-indigo-500 outline-none" value={formData.totalProfit} onChange={e => setFormData({...formData, totalProfit: e.target.value})} />
+                      </div>
+                   </div>
 
-            <div className="space-y-5">
-              <div>
-                <label className="text-xs font-bold text-slate-400 ml-1 uppercase">产品名称</label>
-                <input className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-bold text-slate-900 outline-none focus:border-indigo-500 transition-colors mt-1" placeholder="例如：招商朝朝宝" value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} />
-              </div>
+                   <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">持有天数</label>
+                        <input type="number" placeholder="APP显示天数" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-mono text-sm focus:border-indigo-500 outline-none" value={formData.daysHeld} onChange={e => setFormData({...formData, daysHeld: e.target.value})} />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">预期年化 (%)</label>
+                        <input type="number" placeholder="不填则自动算" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-mono text-sm focus:border-indigo-500 outline-none" value={formData.apy} onChange={e => setFormData({...formData, apy: e.target.value})} />
+                      </div>
+                   </div>
+                   
+                   <div className="bg-indigo-50 p-3 rounded-xl border border-indigo-100 flex justify-between items-center text-xs">
+                        <div>
+                           <div className="font-bold text-indigo-800">自动估算结果:</div>
+                           <div className="text-indigo-600">年化: {fmt(autoCalcInfo.apy)}%</div>
+                        </div>
+                        <div className="text-right">
+                           <div className="text-indigo-400">预计日赚</div>
+                           <div className="font-black text-indigo-700 text-lg">+{fmt(autoCalcInfo.daily)}</div>
+                        </div>
+                   </div>
 
-              <div>
-                <label className="text-xs font-bold text-slate-400 ml-1 uppercase">总投入本金 (¥)</label>
-                <input className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-bold text-slate-900 outline-none focus:border-indigo-500 transition-colors mt-1" type="number" placeholder="0.00" value={formData.principal} onChange={e => setFormData({...formData, principal: e.target.value})} />
-                <p className="text-[9px] text-slate-400 mt-1 ml-1 font-bold text-indigo-500">* 如果加仓了，请在这里把本金金额累加！</p>
-              </div>
+                   <div>
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">产品类型</label>
+                      <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+                        {['稳健', '激进', '短期', '长期', '国债'].map(tag => (
+                          <button key={tag} onClick={() => setFormData({...formData, tag})} className={`px-4 py-2 rounded-xl text-xs font-bold transition-all border whitespace-nowrap ${formData.tag === tag ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-400 border-slate-200 hover:border-slate-300'}`}>{tag}</button>
+                        ))}
+                      </div>
+                   </div>
+                </div>
 
-              <div>
-                <label className="text-xs font-bold text-slate-400 ml-1 uppercase">当前总市值 (¥)</label>
-                <input className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-bold text-slate-900 outline-none focus:border-indigo-500 transition-colors mt-1" type="number" placeholder="APP上显示的当前总金额" value={formData.currentValue} onChange={e => setFormData({...formData, currentValue: e.target.value})} />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                 <div>
-                    <label className="text-xs font-bold text-slate-400 ml-1 uppercase">首次买入日期</label>
-                    <input type="date" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-bold text-slate-900 outline-none focus:border-indigo-500 transition-colors mt-1" value={formData.date} onChange={e => setFormData({...formData, date: e.target.value})} />
-                 </div>
-                 <div>
-                    <label className="text-xs font-bold text-slate-400 ml-1 uppercase">类型标签</label>
-                    <select className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-bold text-slate-900 outline-none focus:border-indigo-500 transition-colors mt-1" value={formData.type} onChange={e => setFormData({...formData, type: e.target.value})}>
-                        <option value="稳健">稳健 R2</option>
-                        <option value="平衡">平衡 R3</option>
-                        <option value="激进">激进 R4</option>
-                        <option value="黄金">黄金</option>
-                        <option value="国债">国债</option>
-                    </select>
-                 </div>
-              </div>
-
-              <div>
-                 <label className="text-xs font-bold text-slate-400 ml-1 uppercase">备注 (选填)</label>
-                 <input className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-bold text-slate-900 outline-none focus:border-indigo-500 transition-colors mt-1" placeholder="例如：1月买1w，6月加2w" value={formData.note} onChange={e => setFormData({...formData, note: e.target.value})} />
-              </div>
-            </div>
-
-            <div className="flex space-x-3 mt-8">
-              <button onClick={() => setIsModalOpen(false)} className="flex-1 py-3.5 rounded-xl font-bold text-slate-500 bg-slate-50 hover:bg-slate-100">取消</button>
-              <button onClick={handleSubmit} className="flex-1 py-3.5 rounded-xl font-bold bg-indigo-600 text-white hover:bg-indigo-700 shadow-lg shadow-indigo-200 active:scale-95 transition-all">保存</button>
-            </div>
+                <button onClick={handleSubmit} className="w-full mt-6 bg-slate-900 hover:bg-indigo-600 text-white py-3.5 rounded-xl font-bold flex items-center justify-center space-x-2 transition-all shadow-lg shadow-slate-900/20 active:scale-95">
+                  <Save size={18} /><span>{isEditing ? '保存修正' : '确认记录'}</span>
+                </button>
+             </div>
           </div>
         </div>
       )}
@@ -353,4 +528,4 @@ const FixedIncome: React.FC<FixedIncomeProps> = ({ items, onDelete, onEdit, onAd
   );
 };
 
-export default FixedIncome; 
+export default FixedIncomeList;
