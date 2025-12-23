@@ -9,7 +9,6 @@ class User(Base):
     username = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     assets = relationship("Asset", back_populates="owner")
-    # 新增关联
     history = relationship("AssetHistory", back_populates="owner")
 
 class Asset(Base):
@@ -31,12 +30,22 @@ class SystemConfig(Base):
     key = Column(String, primary_key=True, index=True)
     value = Column(String)
 
-# 【新增】历史资产快照表
+# 【核心修改】AssetHistory 类（只保留这一个定义，包含了旧字段和新字段）
 class AssetHistory(Base):
     __tablename__ = "asset_history"
     id = Column(Integer, primary_key=True, index=True)
     owner_id = Column(Integer, ForeignKey("users.id"))
-    date = Column(Date, index=True)       # 记录日期 2023-12-01
-    total_asset = Column(Float)           # 当日总资产
-    total_profit = Column(Float)          # 当日总盈利
+    date = Column(Date, index=True)
+    
+    # --- 旧字段 (完全保留，保证兼容性) ---
+    total_asset = Column(Float)           # 总资产 (市值)
+    total_profit = Column(Float)          # 当日总盈亏 (合计)
+    
+    # --- 新增字段 (用于新版仪表盘的详细记录) ---
+    # default=0 保证了旧的历史数据在数据库升级后，这些列会自动填为0，不会报错
+    total_principal = Column(Float, default=0) # 总本金
+    stock_profit = Column(Float, default=0)    # 股票当日盈亏
+    fund_profit = Column(Float, default=0)     # 基金当日盈亏
+    fixed_profit = Column(Float, default=0)    # 理财当日收益
+    
     owner = relationship("User", back_populates="history")
