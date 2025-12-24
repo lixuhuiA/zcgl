@@ -23,6 +23,10 @@ class Asset(Base):
     tag = Column(String, default="稳健")
     start_date = Column(String, nullable=True) # 理财起始日
     apy = Column(Float, nullable=True)         # 理财年化
+    
+    # 【新增】万能扩展字段，用于存储买入明细的 JSON 字符串
+    extra = Column(String, nullable=True)      
+    
     owner = relationship("User", back_populates="assets")
 
 class SystemConfig(Base):
@@ -30,19 +34,18 @@ class SystemConfig(Base):
     key = Column(String, primary_key=True, index=True)
     value = Column(String)
 
-# 【核心修改】AssetHistory 类（只保留这一个定义，包含了旧字段和新字段）
+# 你的 AssetHistory 保持现状即可，它是完美的
 class AssetHistory(Base):
     __tablename__ = "asset_history"
     id = Column(Integer, primary_key=True, index=True)
     owner_id = Column(Integer, ForeignKey("users.id"))
     date = Column(Date, index=True)
     
-    # --- 旧字段 (完全保留，保证兼容性) ---
+    # --- 旧字段 ---
     total_asset = Column(Float)           # 总资产 (市值)
     total_profit = Column(Float)          # 当日总盈亏 (合计)
     
-    # --- 新增字段 (用于新版仪表盘的详细记录) ---
-    # default=0 保证了旧的历史数据在数据库升级后，这些列会自动填为0，不会报错
+    # --- 新字段 ---
     total_principal = Column(Float, default=0) # 总本金
     stock_profit = Column(Float, default=0)    # 股票当日盈亏
     fund_profit = Column(Float, default=0)     # 基金当日盈亏

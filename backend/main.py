@@ -51,6 +51,8 @@ class AssetCreate(BaseModel):
     tag: str = "稳健"
     start_date: Optional[str] = None
     apy: Optional[float] = None
+    # 🔴【核心修改】必须有这个，否则前端传来的明细会被丢弃
+    extra: Optional[str] = None
 
 class ConfigUpdate(BaseModel):
     webhook_url: str
@@ -67,26 +69,36 @@ def startup_event():
             print(">>> [INIT] Creating admin user...")
             db.add(models.User(username="admin", hashed_password=hashed))
         else:
-            # 这里的逻辑是每次重启重置密码，如果你想保留修改过的密码，可以注释掉下面两行
             user.hashed_password = hashed
         
-        # 2. 【核心】自动检测并升级数据库表结构 (Add Missing Columns)
-        # 这样你就不用删库，也不会丢历史数据
+        # 2. 【核心】自动检测并修复数据库字段
         with db_engine.connect() as conn:
-            # 检查 stock_profit 列是否存在，不存在则添加
+            # 2.1 检查 assets 表是否有 extra 字段
+            try:
+                # 尝试查询 extra 字段，如果报错说明不存在
+                conn.execute(text("SELECT extra FROM assets LIMIT 1"))
+            except Exception:
+                print(">>> [AUTO-FIX] Adding 'extra' column to assets table...")
+                try:
+                    conn.execute(text("ALTER TABLE assets ADD COLUMN extra VARCHAR"))
+                    conn.commit()
+                    print(">>> [AUTO-FIX] Success: 'extra' column added.")
+                except Exception as e:
+                    print(f">>> [AUTO-FIX] Failed adding extra: {e}")
+
+            # 2.2 检查 asset_history 表的新字段
             try:
                 conn.execute(text("SELECT stock_profit FROM asset_history LIMIT 1"))
             except Exception:
-                print(">>> [MIGRATE] Adding missing columns to asset_history...")
+                print(">>> [AUTO-FIX] Upgrading asset_history table...")
                 try:
                     conn.execute(text("ALTER TABLE asset_history ADD COLUMN total_principal FLOAT DEFAULT 0"))
                     conn.execute(text("ALTER TABLE asset_history ADD COLUMN stock_profit FLOAT DEFAULT 0"))
                     conn.execute(text("ALTER TABLE asset_history ADD COLUMN fund_profit FLOAT DEFAULT 0"))
                     conn.execute(text("ALTER TABLE asset_history ADD COLUMN fixed_profit FLOAT DEFAULT 0"))
                     conn.commit()
-                    print(">>> [MIGRATE] Database upgraded successfully.")
                 except Exception as e:
-                    print(f">>> [MIGRATE] Warning: Auto-migration failed (might be already done): {e}")
+                    print(f">>> [AUTO-FIX] History upgrade failed: {e}")
 
         db.commit()
     except Exception as e:
@@ -109,10 +121,11 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
         raise HTTPException(status_code=400, detail="Incorrect username or password")
     return {"access_token": user.username, "token_type": "bearer"}
 
-# --- 5. 资产管理接口 (保持原样，不影响) ---
+# --- 5. 资产管理接口 ---
 
 @app.post("/api/assets")
 def add_or_increase_asset(asset: AssetCreate, db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
+    # 先查重
     existing = db.query(models.Asset).filter(
         models.Asset.owner_id == user.id, 
         models.Asset.code == asset.code, 
@@ -120,6 +133,8 @@ def add_or_increase_asset(asset: AssetCreate, db: Session = Depends(get_db), use
     ).first()
     
     if existing:
+        # 如果已存在，更新基础信息
+        # 注意：理财通常 code 是唯一的（带时间戳），所以很少走这里
         old_val = existing.cost_price * existing.quantity
         new_val = asset.cost_price * asset.quantity
         new_qty = existing.quantity + asset.quantity
@@ -128,14 +143,19 @@ def add_or_increase_asset(asset: AssetCreate, db: Session = Depends(get_db), use
             existing.cost_price = (old_val + new_val) / new_qty
             existing.quantity = new_qty
             existing.name = asset.name 
+            # 如果是追加模式，这里可以选择是否覆盖 extra，目前逻辑是覆盖
+            if asset.extra:
+                existing.extra = asset.extra
         else:
             existing.quantity = 0
     else:
+        # 新增资产：🔴 必须要把 extra 存进去
         new_asset = models.Asset(
             owner_id=user.id, asset_type=asset.asset_type, 
             name=asset.name, code=asset.code, 
             cost_price=asset.cost_price, quantity=asset.quantity, 
-            tag=asset.tag, start_date=asset.start_date, apy=asset.apy
+            tag=asset.tag, start_date=asset.start_date, apy=asset.apy,
+            extra=asset.extra 
         )
         db.add(new_asset)
     
@@ -157,7 +177,11 @@ def update_asset_directly(code: str, asset: AssetCreate, db: Session = Depends(g
     target.name = asset.name
     target.tag = asset.tag
     if asset.start_date: target.start_date = asset.start_date
-    if asset.apy: target.apy = asset.apy
+    if asset.apy is not None: target.apy = asset.apy
+    
+    # 🔴 更新逻辑：允许更新 extra 字段
+    if asset.extra is not None: 
+        target.extra = asset.extra
     
     db.commit()
     return {"status": "updated"}
@@ -170,7 +194,10 @@ def read_assets(db: Session = Depends(get_db), user: models.User = Depends(get_c
         data = { 
             "id": a.id, "name": a.name, "code": a.code, 
             "tag": a.tag, "cost_price": a.cost_price, 
-            "quantity": a.quantity, "start_date": a.start_date, "apy": a.apy 
+            "quantity": a.quantity, "start_date": a.start_date, 
+            "apy": a.apy,
+            # 🔴 读取逻辑：必须把 extra 返回给前端
+            "extra": a.extra
         }
         if a.asset_type == 'stock': res["stocks"].append(data)
         elif a.asset_type == 'fund': res["funds"].append(data)
@@ -186,7 +213,7 @@ def delete_asset(asset_id: int, db: Session = Depends(get_db), user: models.User
     db.commit()
     return {"status": "deleted"}
 
-# --- 6. 行情接口 (保持原样) ---
+# --- 6. 行情接口 ---
 
 @app.get("/api/market/refresh")
 async def refresh_market(source: str = "sina", db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
@@ -237,24 +264,22 @@ def set_webhook(config: ConfigUpdate, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "saved"}
 
-# 【更新】历史数据接口：返回字段做了兼容增强
 @app.get("/api/history")
 def get_history(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
     history = db.query(models.AssetHistory).filter(models.AssetHistory.owner_id == user.id).order_by(models.AssetHistory.date).all()
-    # 返回列表，兼容旧前端（total, profit）同时也给新前端（total_asset, stock_profit...）提供数据
     return [{
-        "date": h.date.strftime("%Y-%m-%d"), # 统一格式
-        "total": h.total_asset,        # 旧前端兼容
-        "profit": h.total_profit,      # 旧前端兼容
-        "total_asset": h.total_asset,  # 新前端字段
-        "total_profit": h.total_profit,# 新前端字段
+        "date": h.date.strftime("%Y-%m-%d"),
+        "total": h.total_asset,        
+        "profit": h.total_profit,      
+        "total_asset": h.total_asset,  
+        "total_profit": h.total_profit,
         "total_principal": getattr(h, 'total_principal', 0),
         "stock_profit": getattr(h, 'stock_profit', 0),
         "fund_profit": getattr(h, 'fund_profit', 0),
         "fixed_profit": getattr(h, 'fixed_profit', 0)
     } for h in history]
 
-# --- 8. 核心任务：快照与推送 (满血复活版：精准分账) ---
+# --- 8. 核心任务：快照与推送 (满血复活版：精准分账 + 理财推送) ---
 
 async def perform_push_and_snapshot():
     db = SessionLocal()
@@ -284,7 +309,7 @@ async def perform_push_and_snapshot():
 
         details_text = [] 
 
-        # 2. 计算股票 (使用精准反推逻辑)
+        # 2. 计算股票 (反推逻辑，对齐前端)
         if stocks: details_text.append("【股票/ETF】")
         for s in stocks:
             m = market['stocks'].get(s.code, {'price': s.cost_price, 'change': 0})
@@ -295,7 +320,7 @@ async def perform_push_and_snapshot():
             mv = price * qty
             cost = s.cost_price * qty
             
-            # 核心修正：当日盈亏计算 (MV * Change / (100 + Change))
+            # 日盈亏 = 市值 * 涨幅 / (100+涨幅)
             day_p = 0
             if (100 + change) != 0:
                 day_p = (mv * change) / (100 + change)
@@ -314,7 +339,7 @@ async def perform_push_and_snapshot():
             m = market['funds'].get(f.code)
             if m:
                 price = m.get('price', m.get('nav', f.cost_price))
-                change = m.get('estimatedChange', m.get('change', 0)) # 优先用估值涨幅
+                change = m.get('estimatedChange', m.get('change', 0)) 
                 nav_date = m.get('navDate', '') 
             else:
                 price = f.cost_price
@@ -337,24 +362,34 @@ async def perform_push_and_snapshot():
                 details_text.append(f"{icon} {f.name}: {change}% {d_str}")
 
         # 4. 计算固收 (按 APY 推算)
+        fixed_items_text = []
         for x in fixed:
             principal = x.quantity
-            # 如果有手动填写的“当前市值”，则用当前市值，否则用本金
+            # 优先用市值，没市值用本金
             current_mv = x.cost_price if x.cost_price > 0 else principal 
             
-            # 日收益 = 本金 * APY% / 365
-            day_earn = (principal * (x.apy or 0) / 100) / 365
+            # 修正：日收益 = 市值 * APY% / 365
+            day_earn = (current_mv * (x.apy or 0) / 100) / 365
             
             fixed_val += current_mv
             fixed_principal += principal
             fixed_profit_day += day_earn
+            
+            # 收集理财明细 (只显示日赚大于 0.01 的)
+            if day_earn > 0.01:
+                fixed_items_text.append(f"💰 {x.name}: +{day_earn:.2f}")
+
+        # 【新增】将理财明细加入日报
+        if fixed_items_text:
+            details_text.append("\n【理财固收】")
+            details_text.extend(fixed_items_text)
 
         # 汇总
         total_asset = stock_val + fund_val + fixed_val
         total_profit_day = stock_profit_day + fund_profit_day + fixed_profit_day
         total_principal = stock_principal + fund_principal + fixed_principal
 
-        # 5. 存入数据库快照 (包含详细分账)
+        # 5. 存入数据库快照
         today = date.today()
         existing = db.query(models.AssetHistory).filter(models.AssetHistory.owner_id==admin.id, models.AssetHistory.date==today).first()
         
@@ -384,10 +419,7 @@ async def perform_push_and_snapshot():
         if webhook_cfg and webhook_cfg.value and webhook_cfg.value.startswith("http"):
             
             sign = "+" if total_profit_day >= 0 else ""
-            # 在推送消息里也加上理财信息
-            if fixed_profit_day > 0.01:
-                details_text.append(f"\n【理财固收】\n💰 躺赚: +{fixed_profit_day:.2f}")
-
+            
             content = (
                 f"📅 资产日报 {today.strftime('%Y-%m-%d')}\n"
                 f"----------------\n"

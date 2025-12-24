@@ -49,7 +49,7 @@ const App: React.FC = () => {
       if (res.ok) {
         const data = await res.json();
         
-        // [股票] 数据清洗与映射 (保持原样，不动)
+        // [股票] 数据清洗与映射
         const safeStocks = data.stocks.map((item: any) => ({
           ...item,
           costPrice: item.cost_price ?? item.costPrice ?? 0,
@@ -59,7 +59,7 @@ const App: React.FC = () => {
           name: item.name || "未知标的"
         }));
 
-        // [基金] 数据清洗与映射 (保持原样，不动)
+        // [基金] 数据清洗与映射
         const safeFunds = data.funds.map((item: any) => ({
           ...item,
           costPrice: item.cost_price ?? item.costPrice ?? 0,
@@ -70,15 +70,16 @@ const App: React.FC = () => {
           name: item.name || "未知基金"
         }));
         
-        // [固收/理财] 数据清洗 (⚠️ 关键适配点)
+        // [固收/理财] 数据清洗
         const safeFixed = data.fixed_income.map((item: any) => ({
           ...item,
           quantity: item.quantity ?? 0, // 本金
           apy: item.apy ?? 0,           // 利率
           startDate: item.start_date ?? item.startDate ?? '',
           tag: item.tag || 'deposit',   // 默认为存款模式
-          // 理财模式下，cost_price 存储的是用户手动输入的“当前市值”
-          costPrice: item.cost_price ?? 0 
+          costPrice: item.cost_price ?? 0, // 用户输入市值
+          // 🔴 关键修复点 1：必须把后端传回来的 extra (明细) 存下来，否则页面怎么显示？
+          extra: item.extra || ''       
         }));
 
         setStocks(safeStocks);
@@ -175,7 +176,11 @@ const App: React.FC = () => {
       start_date: asset.startDate ?? null,
       
       // 收益率
-      apy: Number(asset.apy ?? 0)
+      apy: Number(asset.apy ?? 0),
+
+      // 🔴 关键修复点 2：发送请求时，必须把 extra (明细) 带上！
+      // 之前就是因为缺了这行，导致你填了明细发不出去。
+      extra: asset.extra || null
     };
   };
 

@@ -9,6 +9,9 @@ import {
 import { StockAsset, FundAsset, FixedIncomeAsset } from '../types';
 import AssetCards from './AssetCards'; 
 
+// ----------------------------------------------------------------------------
+// 1. 类型定义
+// ----------------------------------------------------------------------------
 interface DashboardProps {
   customStocks: StockAsset[];
   customFunds: FundAsset[];
@@ -26,12 +29,24 @@ interface HistoryItem {
 
 type FilterType = 'ALL' | 'STOCK' | 'FUND' | 'FIXED';
 
+// ----------------------------------------------------------------------------
+// 2. 核心辅助函数
+// ----------------------------------------------------------------------------
 const safeNum = (val: any) => {
   const n = Number(val);
   return isNaN(n) ? 0 : n;
 };
 
-// 复刻天数计算逻辑
+// 获取本地日期字符串 YYYY-MM-DD (确保和后端存的格式一致)
+const getLocalDateStr = () => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+};
+
+// 计算天数差 (用于理财自动推导)
 const getDaysDiff = (startStr?: string) => {
   if (!startStr) return 1;
   const start = new Date(startStr);
@@ -44,10 +59,16 @@ const getDaysDiff = (startStr?: string) => {
 };
 
 const Dashboard: React.FC<DashboardProps> = ({ customStocks, customFunds, fixedIncome }) => {
+  // --------------------------------------------------------------------------
+  // 3. 状态管理
+  // --------------------------------------------------------------------------
   const [historyData, setHistoryData] = useState<HistoryItem[]>([]);
   const [selectedHistory, setSelectedHistory] = useState<HistoryItem | null>(null);
   const [moversFilter, setMoversFilter] = useState<FilterType>('ALL');
 
+  // --------------------------------------------------------------------------
+  // 4. 获取历史数据
+  // --------------------------------------------------------------------------
   useEffect(() => {
     const token = localStorage.getItem('pacc_token');
     if (!token) return;
@@ -55,14 +76,17 @@ const Dashboard: React.FC<DashboardProps> = ({ customStocks, customFunds, fixedI
       .then(res => res.json())
       .then(data => {
           setHistoryData(data);
-          if (data.length > 0) setSelectedHistory(data[data.length - 1]);
+          // 这里先不设置 selectedHistory，等 combinedHistory 生成后再设置默认值
       })
       .catch(e => console.error("History fetch failed:", e));
   }, []);
 
+  // --------------------------------------------------------------------------
+  // 5. 实时计算 (Stats) - 必须与 AssetCards 逻辑 1:1 对齐
+  // --------------------------------------------------------------------------
   const stats = useMemo(() => {
     
-    // --- 1. 股票计算 (完全对齐 StockList & AssetCards) ---
+    // A. 股票 (反推公式)
     let stockMv = 0, stockCost = 0, stockDayProfit = 0;
     const sortedStocks = [...customStocks].map(s => {
         const mv = safeNum(s.currentPrice) * safeNum(s.quantity);
@@ -70,19 +94,15 @@ const Dashboard: React.FC<DashboardProps> = ({ customStocks, customFunds, fixedI
         const change = safeNum(s.changePercent);
         
         let profit = 0;
-        // 核心：使用反推公式
         if (Math.abs(100 + change) > 0.001) {
              profit = (mv * change) / (100 + change);
         }
         
-        stockMv += mv;
-        stockCost += cost;
-        stockDayProfit += profit;
-        
+        stockMv += mv; stockCost += cost; stockDayProfit += profit;
         return { ...s, dailyProfit: profit, mv, type: 'STOCK' as const, displayRate: change };
     });
 
-    // --- 2. 基金计算 ---
+    // B. 基金
     let fundMv = 0, fundCost = 0, fundDayProfit = 0;
     const sortedFunds = [...customFunds].map(f => {
         const mv = safeNum(f.netValue) * safeNum(f.shares);
@@ -90,13 +110,11 @@ const Dashboard: React.FC<DashboardProps> = ({ customStocks, customFunds, fixedI
         const change = safeNum(f.estimatedChange);
         const profit = mv * (change / 100);
 
-        fundMv += mv;
-        fundCost += cost;
-        fundDayProfit += profit;
+        fundMv += mv; fundCost += cost; fundDayProfit += profit;
         return { ...f, dailyProfit: profit, mv, type: 'FUND' as const, displayRate: change };
     });
 
-    // --- 3. 固收计算 (自动推导) ---
+    // C. 固收 (自动推导)
     let fixedMv = 0, fixedPrincipal = 0, fixedDayProfit = 0;
     const sortedFixed = [...fixedIncome].map(i => {
         const principal = safeNum(i.quantity);
@@ -105,27 +123,16 @@ const Dashboard: React.FC<DashboardProps> = ({ customStocks, customFunds, fixedI
         const days = getDaysDiff(i.startDate);
         const totalProfit = currentVal - principal;
 
-        // 核心：自动推导 APY
         if (apy === 0 && totalProfit !== 0 && days > 0 && principal > 0) {
              apy = (totalProfit / principal / days) * 365 * 100;
         }
         
-        // 计算日收益
         let dailyProfit = 0;
-        if (apy !== 0) {
-            dailyProfit = (currentVal * (apy / 100)) / 365;
-        } else if (days > 0 && totalProfit !== 0) {
-            dailyProfit = totalProfit / days;
-        }
+        if (apy !== 0) dailyProfit = (currentVal * (apy / 100)) / 365;
+        else if (days > 0 && totalProfit !== 0) dailyProfit = totalProfit / days;
 
-        fixedMv += currentVal;
-        fixedPrincipal += principal;
-        fixedDayProfit += dailyProfit;
-        
-        return { 
-            id: i.id, name: i.name, code: '理财',
-            dailyProfit: dailyProfit, mv: currentVal, type: 'FIXED' as const, displayRate: apy 
-        };
+        fixedMv += currentVal; fixedPrincipal += principal; fixedDayProfit += dailyProfit;
+        return { id: i.id, name: i.name, code: '理财', dailyProfit: dailyProfit, mv: currentVal, type: 'FIXED' as const, displayRate: apy };
     });
 
     const totalAssets = stockMv + fundMv + fixedMv;
@@ -141,27 +148,48 @@ const Dashboard: React.FC<DashboardProps> = ({ customStocks, customFunds, fixedI
     };
   }, [customStocks, customFunds, fixedIncome]);
 
-  const displayDetails = useMemo(() => {
-      if (!selectedHistory) return null;
-      const now = new Date();
-      const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  // --------------------------------------------------------------------------
+  // 6. 核心修复：构造“虚实结合”的历史数据 (解决今天没数据的问题)
+  // --------------------------------------------------------------------------
+  const combinedHistory = useMemo(() => {
+      const todayStr = getLocalDateStr();
       
-      if (selectedHistory.date === todayStr || (selectedHistory.total_profit === 0 && selectedHistory.stock_profit === 0)) {
-          return {
-              stock: stats.stock.profit,
-              fund: stats.fund.profit,
-              fixed: stats.fixed.profit,
-              total: stats.total.dayProfit
-          };
-      }
-      return {
-          stock: selectedHistory.stock_profit || 0,
-          fund: selectedHistory.fund_profit || 0,
-          fixed: selectedHistory.fixed_profit || 0,
-          total: selectedHistory.total_profit
+      // 1. 过滤掉 API 可能返回的“今天”的旧数据（避免重复）
+      const existingHistory = historyData.filter(h => h.date !== todayStr);
+      
+      // 2. 用实时计算结果 (Stats) 构造“今天”的数据
+      const todayItem: HistoryItem = {
+          date: todayStr,
+          total_asset: stats.total.asset,
+          total_profit: stats.total.dayProfit,
+          stock_profit: stats.stock.profit,
+          fund_profit: stats.fund.profit,
+          fixed_profit: stats.fixed.profit
       };
-  }, [selectedHistory, stats]);
 
+      // 3. 合并：旧历史 + 今天实时
+      const final = [...existingHistory, todayItem];
+      
+      // 按日期升序确保今天在最后
+      return final.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  }, [historyData, stats]);
+
+  // 当数据加载完或更新时，默认选中“今天”
+  useEffect(() => {
+      // 如果还没选中，或者选中的是今天（以便实时刷新数值），就更新选中项
+      const todayStr = getLocalDateStr();
+      if (!selectedHistory || selectedHistory.date === todayStr) {
+          if (combinedHistory.length > 0) {
+              setSelectedHistory(combinedHistory[combinedHistory.length - 1]);
+          }
+      }
+  }, [combinedHistory]); // 依赖 combinedHistory，只要实时数据变了，选中项也会更新
+
+  // --------------------------------------------------------------------------
+  // 7. 其他展示逻辑
+  // --------------------------------------------------------------------------
+  
+  // 异动榜：按【盈利金额】绝对值排序
   const filteredMovers = useMemo(() => {
       let allItems = [...stats.stock.items, ...stats.fund.items, ...stats.fixed.items];
       if (moversFilter === 'STOCK') allItems = stats.stock.items;
@@ -170,20 +198,22 @@ const Dashboard: React.FC<DashboardProps> = ({ customStocks, customFunds, fixedI
 
       return allItems
           .filter(i => Math.abs(i.dailyProfit) > 0.01)
-          .sort((a, b) => b.dailyProfit - a.dailyProfit) 
+          .sort((a, b) => Math.abs(b.dailyProfit) - Math.abs(a.dailyProfit)) 
           .slice(0, 6);
   }, [stats, moversFilter]);
 
+  // 图表数据：直接使用 combinedHistory，这样今天的数据就会出现在图表最右侧！
   const chartData = useMemo(() => {
-      const recent = historyData.slice(-14);
-      if (recent.length === 0) return [{ date: '实时', stock_profit: stats.stock.profit, fund_profit: stats.fund.profit, fixed_profit: stats.fixed.profit, total_profit: stats.total.dayProfit }];
+      const recent = combinedHistory.slice(-14);
+      if (recent.length === 0) return [];
       return recent.map(item => ({
           ...item,
           stock_profit: item.stock_profit || 0,
           fund_profit: item.fund_profit || 0,
           fixed_profit: item.fixed_profit || 0
       }));
-  }, [historyData, stats]);
+  }, [combinedHistory]);
+
 
   return (
     <div className="space-y-8 animate-in fade-in duration-700 pb-10">
@@ -221,9 +251,9 @@ const Dashboard: React.FC<DashboardProps> = ({ customStocks, customFunds, fixedI
                  <div className="text-xs text-slate-400 font-bold">Total Allocation</div>
             </div>
              <div className="w-full relative h-8 bg-slate-100 rounded-full ring-4 ring-slate-50 overflow-hidden flex shadow-inner mb-6">
-                <div className="h-full bg-indigo-600 shadow-lg relative z-10" style={{width: `${stats.total.asset > 0 ? (stats.stock.mv/stats.total.asset)*100 : 0}%`}}></div>
-                <div className="h-full bg-purple-500 shadow-lg relative z-20" style={{width: `${stats.total.asset > 0 ? (stats.fund.mv/stats.total.asset)*100 : 0}%`}}></div>
-                <div className="h-full bg-emerald-500 shadow-lg relative z-30" style={{width: `${stats.total.asset > 0 ? (stats.fixed.mv/stats.total.asset)*100 : 0}%`}}></div>
+                <div className="h-full bg-indigo-600 shadow-lg relative z-10 transition-all duration-1000" style={{width: `${stats.total.asset > 0 ? (stats.stock.mv/stats.total.asset)*100 : 0}%`}}></div>
+                <div className="h-full bg-purple-500 shadow-lg relative z-20 transition-all duration-1000" style={{width: `${stats.total.asset > 0 ? (stats.fund.mv/stats.total.asset)*100 : 0}%`}}></div>
+                <div className="h-full bg-emerald-500 shadow-lg relative z-30 transition-all duration-1000" style={{width: `${stats.total.asset > 0 ? (stats.fixed.mv/stats.total.asset)*100 : 0}%`}}></div>
              </div>
              <div className="grid grid-cols-3 gap-4">
                 <div className="bg-indigo-50 rounded-2xl p-3 text-center border border-indigo-100">
@@ -245,36 +275,55 @@ const Dashboard: React.FC<DashboardProps> = ({ customStocks, customFunds, fixedI
       {/* 2. 持仓卡片 */}
       <div><AssetCards stocks={customStocks} funds={customFunds} fixedIncome={fixedIncome} /></div>
 
-      {/* 3. 底部双雄 (历史详情 + 异动榜) 先展示 */}
+      {/* 3. 底部双雄 (历史详情 + 异动榜) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-white rounded-[2.5rem] shadow-sm border border-slate-200 overflow-hidden flex flex-col md:flex-row min-h-[350px]">
             <div className="p-8 flex-1 border-b md:border-b-0 md:border-r border-slate-100">
                 <div className="flex items-center space-x-3 mb-6"><div className="p-2.5 bg-rose-50 rounded-xl text-rose-500"><Calendar size={20}/></div><div className="font-black text-slate-900 text-lg">历史盈亏快照</div></div>
                 <div className="flex gap-2 flex-wrap content-start">
-                    {historyData.slice(-14).map((day, idx) => (
-                        <button key={idx} onClick={() => setSelectedHistory(day)} className={`w-12 h-14 rounded-xl flex flex-col items-center justify-center text-[9px] font-bold transition-all border-2 ${selectedHistory?.date === day.date ? 'border-slate-900 scale-110 shadow-lg z-10' : 'border-transparent opacity-70 hover:opacity-100 bg-slate-100'} ${day.total_profit > 0 ? 'bg-rose-400 text-white' : (day.total_profit < 0 ? 'bg-emerald-400 text-white' : 'text-slate-400')}`}>
-                            <span>{day.date.slice(5)}</span>
-                            {Math.abs(day.total_profit) > 1 && <span className="mt-1">{day.total_profit > 0 ? '+' : ''}{Math.round(day.total_profit)}</span>}
-                        </button>
-                    ))}
-                    {historyData.length === 0 && <div className="text-slate-400 text-xs py-4">暂无历史数据，今日15:05更新</div>}
+                    {/* 循环渲染 combinedHistory，这样 "今天" 就会出现 */}
+                    {combinedHistory.slice(-14).map((day, idx) => {
+                        const isToday = day.date === getLocalDateStr();
+                        return (
+                            <button 
+                                key={idx} 
+                                onClick={() => setSelectedHistory(day)} 
+                                className={`w-12 h-14 rounded-xl flex flex-col items-center justify-center text-[9px] font-bold transition-all border-2 ${
+                                    selectedHistory?.date === day.date ? 'border-slate-900 scale-110 shadow-lg z-10' : 'border-transparent opacity-70 hover:opacity-100 bg-slate-100'
+                                } ${
+                                    day.total_profit > 0 ? 'bg-rose-400 text-white' : (day.total_profit < 0 ? 'bg-emerald-400 text-white' : 'text-slate-400')
+                                }`}
+                            >
+                                <span>{day.date.slice(5)}</span>
+                                {isToday ? (
+                                    <span className="mt-1 animate-pulse">Live</span>
+                                ) : (
+                                    Math.abs(day.total_profit) > 1 && <span className="mt-1">{day.total_profit > 0 ? '+' : ''}{Math.round(day.total_profit)}</span>
+                                )}
+                            </button>
+                        );
+                    })}
+                    {combinedHistory.length === 0 && <div className="text-slate-400 text-xs py-4">暂无历史数据，今日15:05更新</div>}
                 </div>
             </div>
+            
+            {/* 详情显示区：直接读 selectedHistory */}
             <div className="p-8 w-full md:w-72 bg-slate-50/50 flex flex-col justify-center relative">
                 {selectedHistory ? (
                     <div className="space-y-6 animate-in fade-in zoom-in-95 duration-300">
                         <div>
-                            <div className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2">{selectedHistory.date} 账单</div>
-                            <div className={`text-4xl font-black tracking-tight ${displayDetails && displayDetails.total >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
-                                {displayDetails && displayDetails.total >= 0 ? '+' : ''}
-                                {displayDetails ? displayDetails.total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
+                            <div className="text-xs font-black text-slate-400 uppercase tracking-widest mb-2">
+                                {selectedHistory.date} {selectedHistory.date === getLocalDateStr() ? '(实时)' : '账单'}
+                            </div>
+                            <div className={`text-4xl font-black tracking-tight ${selectedHistory.total_profit >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>
+                                {selectedHistory.total_profit >= 0 ? '+' : ''}{selectedHistory.total_profit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </div>
                         </div>
                         <div className="h-px bg-slate-200 w-full"></div>
                         <div className="space-y-3">
-                            <div className="flex justify-between items-center p-3 bg-white rounded-xl shadow-sm border border-slate-100"><span className="text-xs font-bold text-slate-500 flex items-center"><span className="w-2 h-2 rounded-full bg-indigo-500 mr-2"></span>股票盈亏</span><span className={`text-sm font-black ${displayDetails?.stock && displayDetails.stock >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>{displayDetails ? displayDetails.stock.toFixed(2) : '--'}</span></div>
-                            <div className="flex justify-between items-center p-3 bg-white rounded-xl shadow-sm border border-slate-100"><span className="text-xs font-bold text-slate-500 flex items-center"><span className="w-2 h-2 rounded-full bg-purple-500 mr-2"></span>基金盈亏</span><span className={`text-sm font-black ${displayDetails?.fund && displayDetails.fund >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>{displayDetails ? displayDetails.fund.toFixed(2) : '--'}</span></div>
-                            <div className="flex justify-between items-center p-3 bg-white rounded-xl shadow-sm border border-slate-100"><span className="text-xs font-bold text-slate-500 flex items-center"><span className="w-2 h-2 rounded-full bg-emerald-500 mr-2"></span>理财收益</span><span className="text-sm font-black text-emerald-600">{displayDetails ? `+${displayDetails.fixed.toFixed(2)}` : '--'}</span></div>
+                            <div className="flex justify-between items-center p-3 bg-white rounded-xl shadow-sm border border-slate-100"><span className="text-xs font-bold text-slate-500 flex items-center"><span className="w-2 h-2 rounded-full bg-indigo-500 mr-2"></span>股票盈亏</span><span className={`text-sm font-black ${selectedHistory.stock_profit && selectedHistory.stock_profit >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>{selectedHistory.stock_profit !== undefined ? selectedHistory.stock_profit.toFixed(2) : '--'}</span></div>
+                            <div className="flex justify-between items-center p-3 bg-white rounded-xl shadow-sm border border-slate-100"><span className="text-xs font-bold text-slate-500 flex items-center"><span className="w-2 h-2 rounded-full bg-purple-500 mr-2"></span>基金盈亏</span><span className={`text-sm font-black ${selectedHistory.fund_profit && selectedHistory.fund_profit >= 0 ? 'text-rose-500' : 'text-emerald-500'}`}>{selectedHistory.fund_profit !== undefined ? selectedHistory.fund_profit.toFixed(2) : '--'}</span></div>
+                            <div className="flex justify-between items-center p-3 bg-white rounded-xl shadow-sm border border-slate-100"><span className="text-xs font-bold text-slate-500 flex items-center"><span className="w-2 h-2 rounded-full bg-emerald-500 mr-2"></span>理财收益</span><span className="text-sm font-black text-emerald-600">{selectedHistory.fixed_profit !== undefined ? `+${selectedHistory.fixed_profit.toFixed(2)}` : '--'}</span></div>
                         </div>
                     </div>
                 ) : <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-xs font-bold">👈 点击左侧日期查看分账详情</div>}
@@ -309,7 +358,7 @@ const Dashboard: React.FC<DashboardProps> = ({ customStocks, customFunds, fixedI
         </div>
       </div>
 
-      {/* 4. 盈亏贡献图 (沉底) */}
+      {/* 4. 盈亏贡献图 (沉底) - 数据也使用 combinedHistory，这样今天的数据就会出现！ */}
       <div className="bg-white p-8 rounded-[2.5rem] shadow-sm border border-slate-200">
            <div className="flex items-center justify-between mb-6">
              <div className="flex items-center space-x-3">
