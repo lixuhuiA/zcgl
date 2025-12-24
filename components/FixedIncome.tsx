@@ -76,7 +76,7 @@ const FixedIncomeList: React.FC<FixedIncomeListProps> = ({ items = [], onDelete,
   // 表单数据
   const [formData, setFormData] = useState({
     id: '', code: '', name: '', marketValue: '', totalProfit: '', daysHeld: '', 
-    recordDate: '', tag: '稳健', apy: '', extra: ''
+    recordDate: '', tag: '月月宝', apy: '', extra: ''
   });
 
   // 明细模式状态
@@ -284,7 +284,7 @@ const FixedIncomeList: React.FC<FixedIncomeListProps> = ({ items = [], onDelete,
   };
 
   const openAddModal = () => { 
-    setFormData({ id: '', code: '', name: '', marketValue: '', totalProfit: '', daysHeld: '', recordDate: new Date().toISOString().split('T')[0], tag: '稳健', apy: '', extra: '' }); 
+    setFormData({ id: '', code: '', name: '', marketValue: '', totalProfit: '', daysHeld: '', recordDate: new Date().toISOString().split('T')[0], tag: '月月宝', apy: '', extra: '' }); 
     setTransactions([]);
     setIsDetailMode(false);
     setIsEditing(false); 
@@ -311,7 +311,7 @@ const FixedIncomeList: React.FC<FixedIncomeListProps> = ({ items = [], onDelete,
       totalProfit: String(item.totalProfit),
       daysHeld: String(item.daysHeld),
       recordDate: item.recordDate || new Date().toISOString().split('T')[0],
-      tag: item.tag || '稳健',
+      tag: item.tag || '月月宝',
       apy: item.apy ? String(item.apy) : '',
       extra: item.extra || ''
     });
@@ -479,7 +479,7 @@ const FixedIncomeList: React.FC<FixedIncomeListProps> = ({ items = [], onDelete,
                         </div>
                         <div className="flex flex-wrap items-center gap-1.5 ml-4">
                            <span className="text-[10px] font-bold text-indigo-500 bg-indigo-50 px-1.5 py-0.5 rounded border border-indigo-100 flex items-center">
-                             <Tag size={8} className="mr-1"/>{item.tag || '稳健'}
+                             <Tag size={8} className="mr-1"/>{item.tag || '月月宝'}
                            </span>
                            {/* 简单展示 extra 的一部分，如果不是 JSON 数组的话 */}
                            {item.extra && !item.extra.startsWith('[') && <span className="text-[10px] text-slate-400 border border-slate-100 px-1 rounded">{item.extra}</span>}
@@ -684,7 +684,7 @@ const FixedIncomeList: React.FC<FixedIncomeListProps> = ({ items = [], onDelete,
                    <div>
                       <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1.5 ml-1">产品类型</label>
                       <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
-                        {['稳健', '激进', '短期', '长期', '国债'].map(tag => (
+                        {['朝朝宝', '月月宝', '季季宝', '半年宝', '年年宝','存款','农行','招行','苏行','支付宝','微信','活期'].map(tag => (
                           <button key={tag} onClick={() => setFormData({...formData, tag})} className={`px-4 py-2 rounded-xl text-xs font-bold transition-all border whitespace-nowrap ${formData.tag === tag ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-400 border-slate-200 hover:border-slate-300'}`}>{tag}</button>
                         ))}
                       </div>
